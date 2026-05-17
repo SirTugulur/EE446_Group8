@@ -237,7 +237,8 @@ void loop() {
 
   if (rxCharacteristic.written()) {
 
-    String cmd = rxCharacteristic.value();
+    const uint8_t* rawData = rxCharacteristic.value();
+    String cmd = String((char*)rawData);
 
     processBLECommand(cmd);
   }
