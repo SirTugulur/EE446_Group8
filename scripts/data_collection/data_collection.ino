@@ -34,6 +34,7 @@ int storageCount = 0;
 bool recording = false;
 unsigned long throwStartTime = 0;
 unsigned long throwID = 0;
+bool bleActive = false; // Add this line to track the radio state
 
 // ---------- BLE NORDIC UART UUIDS ----------
 BLEService uartService("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
@@ -63,7 +64,10 @@ void blePrint(String msg) {
   for (int i = 0; i < len; i += 20) {
     int chunkLen = min(20, len - i);
     String chunk = msg.substring(i, i + chunkLen);
-    txCharacteristic.writeValue(chunk.c_str(), chunkLen);
+    
+    // Explicitly cast to const uint8_t* to resolve the ambiguous overload
+    txCharacteristic.writeValue((const uint8_t*)chunk.c_str(), chunkLen);
+    
     delay(10); // Short buffer delay to prevent packet drop on the stack
   }
 }
@@ -166,32 +170,54 @@ void loop() {
   // =====================================================
   // Runs only if a complete throw dataset is frozen in memory
   if (!recording && storageCount > 0) {
-    BLE.advertise(); // Start broadcast signal
+    
+    // Only trigger the advertise command once
+    if (!bleActive) {
+      BLE.advertise(); 
+      bleActive = true;
+    }
     
     BLEDevice central = BLE.central();
-    if (central && central.connected()) {
+    if (central) {
       
-      // 1. Send CSV Headers
-      blePrint("throw_id,time_us,ax,ay,az,gx,gy,gz,mx,my,mz,accel_mag,gyro_mag\n");
-      
-      // 2. Dump sequential arrays
-      for (int i = 0; i < storageCount; i++) {
-        blePrint(formatSampleCSV(throwID, storageBuffer[i]));
+      // -> THE FIX: Wait right here until the user taps "Subscribe" in the app
+      while (central.connected() && !txCharacteristic.subscribed()) {
+        delay(10); 
       }
-      
-      // 3. Send Metadata tail
-      blePrint("# METADATA,{\"throw_id\":" + String(throwID) + ",\"samples\":" + String(storageCount) + "}\n\n");
-      
-      // 4. Reset state machine for the next throw session
-      storageCount = 0; 
-      delay(500); 
-      central.disconnect();
-      BLE.stopAdvertise();
+
+      // If they subscribed, dump the data!
+      if (central.connected() && txCharacteristic.subscribed()) {
+        
+        // 1. Send CSV Headers
+        blePrint("throw_id,time_us,ax,ay,az,gx,gy,gz,mx,my,mz,accel_mag,gyro_mag\n");
+        
+        // 2. Dump sequential arrays
+        for (int i = 0; i < storageCount; i++) {
+          blePrint(formatSampleCSV(throwID, storageBuffer[i]));
+        }
+        
+        // 3. Send Metadata tail
+        blePrint("# METADATA,{\"throw_id\":" + String(throwID) + ",\"samples\":" + String(storageCount) + "}\n\n");
+        
+        // 4. Clear the memory for the next throw
+        storageCount = 0; 
+        
+        // -> THE NEW FIX: Keep the line open! 
+        // The Arduino will idle right here until YOU tap disconnect in the app.
+        while (central.connected()) {
+          delay(100); 
+        }
+        
+        // Once you disconnect, the board safely shuts down the radio
+        BLE.stopAdvertise();
+        bleActive = false;
+      }
     }
   } else {
     // Turn off radio while tracking flight to save resources/power
-    if (BLE.advertising()) {
+    if (bleActive) {
       BLE.stopAdvertise();
+      bleActive = false;
     }
   }
 
