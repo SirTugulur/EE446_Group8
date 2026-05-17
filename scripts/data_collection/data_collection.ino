@@ -4,7 +4,7 @@
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  delay(2000);
+  delay(200);
   
   if (!IMU.begin()) {
     Serial.println("Failed to initialize IMU.");
@@ -30,5 +30,5 @@ void loop() {
     IMU.readMagneticField(mx,my,mz);
   }
 
-  delay(500);  
+  delay(50);  
 }
