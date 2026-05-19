@@ -38,8 +38,8 @@ bool bleActive = false; // Add this line to track the radio state
 
 // ---------- BLE NORDIC UART UUIDS ----------
 BLEService uartService("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
-BLECharacteristic txCharacteristic("6E400003-B5A3-F393-E0A9-E50E24DCCA9E", BLENotify, 20);
-BLECharacteristic rxCharacteristic("6E400002-B5A3-F393-E0A9-E50E24DCCA9E", BLEWrite, 20);
+BLECharacteristic txCharacteristic("6E400003-B5A3-F393-E0A9-E50E24DCCA9E", BLENotify, 255);
+BLECharacteristic rxCharacteristic("6E400002-B5A3-F393-E0A9-E50E24DCCA9E", BLEWrite, 255);
 
 // =====================================================
 // Utility Functions
@@ -58,18 +58,14 @@ String formatSampleCSV(unsigned long id, IMUSample s) {
          String(s.accelMag, 4) + "," + String(s.gyroMag, 2) + "\n";
 }
 
-// Chunks longer CSV rows into standard 20-byte BLE packets
+// Sends the entire CSV row as a single large BLE packet
 void blePrint(String msg) {
-  int len = msg.length();
-  for (int i = 0; i < len; i += 20) {
-    int chunkLen = min(20, len - i);
-    String chunk = msg.substring(i, i + chunkLen);
-    
-    // Explicitly cast to const uint8_t* to resolve the ambiguous overload
-    txCharacteristic.writeValue((const uint8_t*)chunk.c_str(), chunkLen);
-    
-    delay(10); // Short buffer delay to prevent packet drop on the stack
-  }
+  // Write the whole string at once up to our new 255 byte limit
+  txCharacteristic.writeValue((const uint8_t*)msg.c_str(), msg.length());
+  
+  // A slightly longer delay gives the Bluetooth radio time 
+  // to clear the larger packet from its buffer
+  delay(15);
 }
 
 // =====================================================
@@ -162,6 +158,7 @@ void loop() {
     if (catchDetected || timeoutDetected) {
       recording = false;
       // Flight finishes. The data safely rests in storageBuffer waiting for sync.
+      Serial.println("Flight finished");
     }
   }
 
@@ -220,6 +217,4 @@ void loop() {
       bleActive = false;
     }
   }
-
-  delay(5); // ~200 Hz baseline sampling
 }
