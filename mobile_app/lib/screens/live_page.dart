@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -5,8 +8,13 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/throw_data.dart';
 import '../services/fake_throw_service.dart';
 
-class LivePage extends StatefulWidget {
+class _BleThrowUpload {
+  final List<ThrowSample> samples = [];
+  final StringBuffer rawText = StringBuffer();
+  Map<String, dynamic>? metadata;
+}
 
+class LivePage extends StatefulWidget {
   final List<ThrowData> liveThrows;
 
   final Function(ThrowData) onSave;
@@ -36,105 +44,414 @@ class LivePage extends StatefulWidget {
 }
 
 class _LivePageState extends State<LivePage> {
+  static final Guid _nordicUartServiceUuid = Guid(
+    "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+  );
+  static final Guid _nordicUartTxCharacteristicUuid = Guid(
+    "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
+  );
+  static final Guid _nordicUartRxCharacteristicUuid = Guid(
+    "6E400002-B5A3-F393-E0A9-E50E24DCCA9E",
+  );
+  static String? _lastFrisbeeTrackRemoteId;
 
   bool isConnected = false;
+  bool isConnecting = false;
 
   BluetoothDevice? connectedDevice;
+  BluetoothCharacteristic? uartTxCharacteristic;
+  BluetoothCharacteristic? uartRxCharacteristic;
+
+  StreamSubscription<List<ScanResult>>? scanResultsSubscription;
+  StreamSubscription<BluetoothConnectionState>? connectionStateSubscription;
+  StreamSubscription<List<int>>? uartTxSubscription;
 
   List<ScanResult> scanResults = [];
+  _BleThrowUpload? activeUpload;
 
   @override
   void initState() {
     super.initState();
 
+    _restorePreviousConnection();
     scanForDevices();
   }
 
-  Future<void> scanForDevices() async {
+  @override
+  void dispose() {
+    scanResultsSubscription?.cancel();
+    connectionStateSubscription?.cancel();
+    uartTxSubscription?.cancel();
+    FlutterBluePlus.stopScan();
+    super.dispose();
+  }
 
+  void safeSetState(VoidCallback update) {
+    if (!mounted) {
+      return;
+    }
+
+    setState(update);
+  }
+
+  Future<void> _restorePreviousConnection() async {
+    final remoteId = _lastFrisbeeTrackRemoteId;
+
+    if (remoteId == null) {
+      return;
+    }
+
+    debugPrint("Reconnecting to previous FrisbeeTrack device: $remoteId");
+
+    await connectToDevice(BluetoothDevice.fromId(remoteId), autoConnect: true);
+  }
+
+  Future<void> scanForDevices() async {
     await Permission.bluetoothScan.request();
     await Permission.bluetoothConnect.request();
     await Permission.location.request();
 
-    scanResults.clear();
+    safeSetState(() {
+      scanResults.clear();
+    });
 
-    setState(() {});
-
-    FlutterBluePlus.startScan(
-      timeout: const Duration(seconds: 5),
-    );
-
-    FlutterBluePlus.scanResults.listen((results) {
-
-      setState(() {
-
+    await scanResultsSubscription?.cancel();
+    scanResultsSubscription = FlutterBluePlus.scanResults.listen((results) {
+      safeSetState(() {
         scanResults = results;
       });
+
+      _connectToPreviousDeviceFromScan(results);
     });
+
+    await FlutterBluePlus.stopScan();
+
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+  }
+
+  void _connectToPreviousDeviceFromScan(List<ScanResult> results) {
+    final remoteId = _lastFrisbeeTrackRemoteId;
+
+    if (remoteId == null || isConnected || isConnecting) {
+      return;
+    }
+
+    for (final result in results) {
+      if (result.device.remoteId.toString() == remoteId) {
+        connectToDevice(result.device, autoConnect: true);
+        return;
+      }
+    }
   }
 
   Future<void> connectToDevice(
-      BluetoothDevice device) async {
+    BluetoothDevice device, {
+    bool autoConnect = false,
+  }) async {
+    if (isConnecting) {
+      return;
+    }
 
     try {
+      safeSetState(() {
+        isConnecting = true;
+      });
+
+      await _monitorConnectionState(device);
 
       await device.connect(
         license: License.free,
+        autoConnect: autoConnect,
+        mtu: autoConnect ? null : 512,
       );
+    } catch (e) {
+      debugPrint("Connection Error: $e");
+    } finally {
+      safeSetState(() {
+        isConnecting = false;
+      });
+    }
+  }
 
-      connectedDevice = device;
+  Future<void> _monitorConnectionState(BluetoothDevice device) async {
+    await connectionStateSubscription?.cancel();
 
-      setState(() {
+    connectionStateSubscription = device.connectionState.listen((state) async {
+      final connected = state == BluetoothConnectionState.connected;
 
-        isConnected = true;
+      safeSetState(() {
+        connectedDevice = connected ? device : connectedDevice;
+        isConnected = connected;
       });
 
-      List<BluetoothService> services =
-          await device.discoverServices();
+      if (connected) {
+        await _handleDeviceConnected(device);
+        return;
+      }
 
-      debugPrint(
-        "Services Found: ${services.length}",
-      );
+      await uartTxSubscription?.cancel();
+      uartTxSubscription = null;
+      uartTxCharacteristic = null;
+      uartRxCharacteristic = null;
+      activeUpload = null;
 
-    } catch (e) {
+      if (_lastFrisbeeTrackRemoteId == device.remoteId.toString() && mounted) {
+        debugPrint(
+          "FrisbeeTrack disconnected; auto reconnect remains enabled.",
+        );
+      }
+    });
+  }
 
-      debugPrint(
-        "Connection Error: $e",
-      );
+  Future<void> _handleDeviceConnected(BluetoothDevice device) async {
+    if (!mounted) {
+      return;
     }
+
+    connectedDevice = device;
+
+    safeSetState(() {
+      isConnected = true;
+    });
+
+    final services = await device.discoverServices();
+
+    debugPrint("Services Found: ${services.length}");
+
+    final uartService = _findService(services, _nordicUartServiceUuid);
+
+    if (uartService == null) {
+      debugPrint("Nordic UART service not found.");
+      return;
+    }
+
+    _lastFrisbeeTrackRemoteId = device.remoteId.toString();
+    debugPrint("Nordic UART service discovered.");
+
+    final txCharacteristic = _findCharacteristic(
+      uartService,
+      _nordicUartTxCharacteristicUuid,
+    );
+    final rxCharacteristic = _findCharacteristic(
+      uartService,
+      _nordicUartRxCharacteristicUuid,
+    );
+
+    if (txCharacteristic == null) {
+      debugPrint("Nordic UART TX characteristic not found.");
+      return;
+    }
+
+    await uartTxSubscription?.cancel();
+    uartTxCharacteristic = txCharacteristic;
+    uartRxCharacteristic = rxCharacteristic;
+    uartTxSubscription = txCharacteristic.onValueReceived.listen((packet) async {
+      debugPrint("FrisbeeTrack packet: $packet");
+
+      final textPacket = String.fromCharCodes(packet);
+      await _handleBleTextPacket(textPacket);
+    });
+
+    await txCharacteristic.setNotifyValue(true);
+    debugPrint("Subscribed to Nordic UART TX notifications.");
+  }
+
+  Future<void> _handleBleTextPacket(String textPacket) async {
+    debugPrint("FrisbeeTrack text: ${textPacket.trim()}");
+
+    final upload = activeUpload ?? _BleThrowUpload();
+    activeUpload = upload;
+    upload.rawText.write(textPacket);
+
+    final lines = upload.rawText.toString().split('\n');
+    upload.rawText
+      ..clear()
+      ..write(lines.removeLast());
+
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+
+      if (line.isEmpty || line.startsWith("sample_index")) {
+        continue;
+      }
+
+      if (line == "BEGIN_THROW") {
+        activeUpload = _BleThrowUpload();
+        debugPrint("BLE upload started.");
+        continue;
+      }
+
+      if (line.startsWith("STATE:")) {
+        debugPrint("BLE state: $line");
+        continue;
+      }
+
+      if (line.startsWith("#METADATA,")) {
+        activeUpload?.metadata = _parseMetadata(line);
+        debugPrint("BLE metadata parsed: ${activeUpload?.metadata}");
+        continue;
+      }
+
+      if (line == "END_THROW") {
+        await _finishBleUpload();
+        continue;
+      }
+
+      final sample = _parseSampleLine(line);
+      if (sample != null) {
+        activeUpload?.samples.add(sample);
+      } else {
+        debugPrint("Skipped unknown BLE line: $line");
+      }
+    }
+  }
+
+  ThrowSample? _parseSampleLine(String line) {
+    final parts = line.split(',');
+
+    if (parts.length != 15) {
+      return null;
+    }
+
+    try {
+      return ThrowSample(
+        sampleIndex: int.parse(parts[0]),
+        throwId: int.parse(parts[1]),
+        label: parts[2],
+        timeMs: int.parse(parts[3]),
+        ax: double.parse(parts[4]),
+        ay: double.parse(parts[5]),
+        az: double.parse(parts[6]),
+        gx: double.parse(parts[7]),
+        gy: double.parse(parts[8]),
+        gz: double.parse(parts[9]),
+        mx: double.parse(parts[10]),
+        my: double.parse(parts[11]),
+        mz: double.parse(parts[12]),
+        accelMag: double.parse(parts[13]),
+        gyroMag: double.parse(parts[14]),
+      );
+    } catch (e) {
+      debugPrint("Sample parse failed: $e | $line");
+      return null;
+    }
+  }
+
+  Map<String, dynamic>? _parseMetadata(String line) {
+    try {
+      return jsonDecode(line.substring("#METADATA,".length))
+          as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint("Metadata parse failed: $e | $line");
+      return null;
+    }
+  }
+
+  Future<void> _finishBleUpload() async {
+    final upload = activeUpload;
+    activeUpload = null;
+
+    if (upload == null) {
+      debugPrint("END_THROW received without an active upload.");
+      return;
+    }
+
+    final metadata = upload.metadata;
+
+    if (metadata == null) {
+      debugPrint("Throw upload missing metadata; ACK withheld.");
+      return;
+    }
+
+    final throwId = (metadata["throw_id"] as num).toInt();
+    final label = metadata["label"] as String? ?? "unlabeled";
+    final flightTimeMs = (metadata["flight_time_ms"] as num?)?.toInt() ?? 0;
+    final maxAccel = (metadata["max_accel"] as num?)?.toDouble() ?? 0.0;
+    final maxGyro = (metadata["max_gyro"] as num?)?.toDouble() ?? 0.0;
+    final expectedSamples = (metadata["samples"] as num?)?.toInt();
+
+    if (expectedSamples != null && expectedSamples != upload.samples.length) {
+      debugPrint(
+        "Sample count mismatch: expected $expectedSamples, got ${upload.samples.length}. ACK withheld.",
+      );
+      return;
+    }
+
+    widget.onAddThrow(
+      ThrowData(
+        throwId: throwId,
+        label: label,
+        flightTime: flightTimeMs / 1000.0,
+        maxAccel: maxAccel,
+        maxGyro: maxGyro,
+        samples: List.unmodifiable(upload.samples),
+      ),
+    );
+
+    debugPrint(
+      "Stored throw $throwId with ${upload.samples.length} samples. Sending ACK.",
+    );
+    await _acknowledgeThrow();
+  }
+
+  Future<void> _acknowledgeThrow() async {
+    final rxCharacteristic = uartRxCharacteristic;
+
+    if (rxCharacteristic == null) {
+      debugPrint("Cannot ACK throw: Nordic UART RX characteristic not found.");
+      return;
+    }
+
+    try {
+      await rxCharacteristic.write(ascii.encode("ACK_THROW"));
+      debugPrint("Sent ACK_THROW.");
+    } catch (e) {
+      debugPrint("ACK_THROW failed: $e");
+    }
+  }
+
+  BluetoothService? _findService(List<BluetoothService> services, Guid uuid) {
+    for (final service in services) {
+      if (service.uuid == uuid) {
+        return service;
+      }
+    }
+
+    return null;
+  }
+
+  BluetoothCharacteristic? _findCharacteristic(
+    BluetoothService service,
+    Guid uuid,
+  ) {
+    for (final characteristic in service.characteristics) {
+      if (characteristic.uuid == uuid) {
+        return characteristic;
+      }
+    }
+
+    return null;
   }
 
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
-
-      appBar: AppBar(
-        title: const Text("Live Throws"),
-      ),
+      appBar: AppBar(title: const Text("Live Throws")),
 
       body: Column(
-
         children: [
-
           const SizedBox(height: 10),
 
           //--------------------------------
           // BLE STATUS
           //--------------------------------
-
           Row(
-
-            mainAxisAlignment:
-                MainAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.center,
 
             children: [
-
               Icon(
                 Icons.circle,
-                color: isConnected
-                    ? Colors.green
-                    : Colors.red,
+                color: isConnected ? Colors.green : Colors.red,
                 size: 14,
               ),
 
@@ -143,6 +460,8 @@ class _LivePageState extends State<LivePage> {
               Text(
                 isConnected
                     ? "BLE Connected"
+                    : isConnecting
+                    ? "BLE Connecting"
                     : "BLE Disconnected",
               ),
             ],
@@ -153,14 +472,10 @@ class _LivePageState extends State<LivePage> {
           //--------------------------------
           // SCAN BUTTON
           //--------------------------------
-
           ElevatedButton(
-
             onPressed: scanForDevices,
 
-            child: const Text(
-              "Scan For Devices",
-            ),
+            child: const Text("Scan For Devices"),
           ),
 
           const SizedBox(height: 10),
@@ -168,45 +483,30 @@ class _LivePageState extends State<LivePage> {
           //--------------------------------
           // DEVICE LIST
           //--------------------------------
-
           SizedBox(
-
             height: 150,
 
             child: ListView.builder(
-
               itemCount: scanResults.length,
 
               itemBuilder: (context, index) {
-
-                final result =
-                    scanResults[index];
+                final result = scanResults[index];
 
                 return ListTile(
-
                   title: Text(
-                    result.device.platformName
-                            .isEmpty
+                    result.device.platformName.isEmpty
                         ? "Unknown Device"
                         : result.device.platformName,
                   ),
 
-                  subtitle: Text(
-                    result.device.remoteId
-                        .toString(),
-                  ),
+                  subtitle: Text(result.device.remoteId.toString()),
 
                   trailing: ElevatedButton(
-
                     onPressed: () {
-
-                      connectToDevice(
-                        result.device,
-                      );
+                      connectToDevice(result.device);
                     },
 
-                    child:
-                        const Text("Connect"),
+                    child: const Text("Connect"),
                   ),
                 );
               },
@@ -218,23 +518,14 @@ class _LivePageState extends State<LivePage> {
           //--------------------------------
           // THROW TYPE
           //--------------------------------
-
           DropdownButton<String>(
-
             value: widget.selectedThrowType,
 
             items: widget.throwTypes.map((type) {
-
-              return DropdownMenuItem(
-
-                value: type,
-
-                child: Text(type),
-              );
+              return DropdownMenuItem(value: type, child: Text(type));
             }).toList(),
 
-            onChanged:
-                widget.onThrowTypeChanged,
+            onChanged: widget.onThrowTypeChanged,
           ),
 
           const SizedBox(height: 10),
@@ -242,28 +533,18 @@ class _LivePageState extends State<LivePage> {
           //--------------------------------
           // FAKE THROW
           //--------------------------------
-
           ElevatedButton(
-
             onPressed: () {
-
-              final throwData =
-                  FakeThrowService
-                      .generateThrow(
+              final throwData = FakeThrowService.generateThrow(
                 widget.liveThrows.length + 1,
               );
 
-              throwData.label =
-                  widget.selectedThrowType;
+              throwData.label = widget.selectedThrowType;
 
-              widget.onAddThrow(
-                throwData,
-              );
+              widget.onAddThrow(throwData);
             },
 
-            child: const Text(
-              "Generate Fake Throw",
-            ),
+            child: const Text("Generate Fake Throw"),
           ),
 
           const SizedBox(height: 10),
@@ -271,47 +552,28 @@ class _LivePageState extends State<LivePage> {
           //--------------------------------
           // THROW QUEUE
           //--------------------------------
-
           Expanded(
-
             child: ListView.builder(
+              itemCount: widget.liveThrows.length,
 
-              itemCount:
-                  widget.liveThrows.length,
-
-              itemBuilder: (
-                context,
-                index,
-              ) {
-
-                final throwData =
-                    widget.liveThrows[index];
+              itemBuilder: (context, index) {
+                final throwData = widget.liveThrows[index];
 
                 return Card(
-
-                  margin:
-                      const EdgeInsets.all(8),
+                  margin: const EdgeInsets.all(8),
 
                   child: Padding(
-
-                    padding:
-                        const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(12),
 
                     child: Column(
-
-                      crossAxisAlignment:
-                          CrossAxisAlignment
-                              .start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
 
                       children: [
-
                         Text(
                           throwData.label,
-                          style:
-                              const TextStyle(
+                          style: const TextStyle(
                             fontSize: 22,
-                            fontWeight:
-                                FontWeight.bold,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
 
@@ -328,60 +590,33 @@ class _LivePageState extends State<LivePage> {
                         ),
 
                         CheckboxListTile(
+                          value: throwData.wobble,
 
-                          value:
-                              throwData.wobble,
-
-                          title: const Text(
-                            "Wobbly",
-                          ),
+                          title: const Text("Wobbly"),
 
                           onChanged: (value) {
-
-                            widget
-                                .onWobbleChanged(
-                              throwData,
-                              value ?? false,
-                            );
+                            widget.onWobbleChanged(throwData, value ?? false);
                           },
                         ),
 
                         Row(
-
                           children: [
-
                             ElevatedButton(
-
                               onPressed: () {
-
-                                widget.onSave(
-                                  throwData,
-                                );
+                                widget.onSave(throwData);
                               },
 
-                              child:
-                                  const Text(
-                                "Save",
-                              ),
+                              child: const Text("Save"),
                             ),
 
-                            const SizedBox(
-                              width: 8,
-                            ),
+                            const SizedBox(width: 8),
 
                             ElevatedButton(
-
                               onPressed: () {
-
-                                widget.onDelete(
-                                  throwData,
-                                );
+                                widget.onDelete(throwData);
                               },
 
-                              child:
-                                  const Text(
-                                "Delete",
-                              ),
+                              child: const Text("Delete"),
                             ),
                           ],
                         ),

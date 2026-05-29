@@ -14,6 +14,9 @@ const unsigned long MIN_THROW_MS = 300;
 
 const int PRE_TRIGGER_SAMPLES = 30;
 const int MAX_STORAGE_SAMPLES = 800;
+const int MAX_THROWS = 3;
+const int MAX_LABEL_LEN = 24;
+const unsigned long ACK_TIMEOUT_MS = 10000;
 
 // =====================================================
 // THROW LABEL
@@ -36,6 +39,18 @@ struct IMUSample {
   float gyroMag;
 };
 
+struct CompletedThrow {
+  unsigned long id;
+  char label[MAX_LABEL_LEN];
+  unsigned long flightTimeMs;
+  float maxAccel;
+  float maxGyro;
+  int sampleCount;
+  bool waitingForAck;
+  unsigned long uploadCompleteMs;
+  IMUSample samples[MAX_STORAGE_SAMPLES];
+};
+
 // =====================================================
 // MEMORY BUFFERS
 // =====================================================
@@ -43,23 +58,30 @@ struct IMUSample {
 IMUSample preBuffer[PRE_TRIGGER_SAMPLES];
 int preIndex = 0;
 
-IMUSample storageBuffer[MAX_STORAGE_SAMPLES];
-int storageCount = 0;
+IMUSample recordingBuffer[MAX_STORAGE_SAMPLES];
+int recordingCount = 0;
+
+CompletedThrow throwQueue[MAX_THROWS];
+int queueCount = 0;
 
 // =====================================================
 // THROW STATE
 // =====================================================
 
 bool recording = false;
+bool uploading = false;
+bool connected = false;
+bool subscribed = false;
 
 unsigned long throwStartTime = 0;
 unsigned long throwID = 0;
+float activeMaxAccel = 0.0;
+float activeMaxGyro = 0.0;
 
 // ---------- BLE NORDIC UART UUIDS ----------
 BLEService uartService("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
 BLECharacteristic txCharacteristic("6E400003-B5A3-F393-E0A9-E50E24DCCA9E", BLENotify, 255);
 BLECharacteristic rxCharacteristic("6E400002-B5A3-F393-E0A9-E50E24DCCA9E", BLEWrite, 255);
-bool bleActive = false;
 
 // =====================================================
 // UTILITIES
@@ -69,18 +91,27 @@ float magnitude3(float x, float y, float z) {
   return sqrt(x * x + y * y + z * z);
 }
 
+void copyLabel(char* destination, const String& source) {
+  source.substring(0, MAX_LABEL_LEN - 1).toCharArray(destination, MAX_LABEL_LEN);
+}
+
 // =====================================================
 // BLE PRINT
 // =====================================================
 
-// Sends the entire CSV row as a single large BLE packet
-void blePrint(String msg) {
-  // Write the whole string at once up to our new 255 byte limit
+bool blePrint(String msg) {
+  if (!connected || !txCharacteristic.subscribed()) {
+    return false;
+  }
+
   txCharacteristic.writeValue((const uint8_t*)msg.c_str(), msg.length());
-  
-  // A slightly longer delay gives the Bluetooth radio time 
-  // to clear the larger packet from its buffer
   delay(15);
+  return true;
+}
+
+void sendState(const String& state) {
+  blePrint("STATE:" + state + "\n");
+  Serial.println("STATE:" + state);
 }
 
 // =====================================================
@@ -89,7 +120,7 @@ void blePrint(String msg) {
 
 String formatSampleCSV(
   unsigned long id,
-  String label,
+  const char* label,
   int sampleIndex,
   unsigned long tRel,
   IMUSample s
@@ -97,7 +128,7 @@ String formatSampleCSV(
 
   return String(sampleIndex) + "," +
          String(id) + "," +
-         label + "," +
+         String(label) + "," +
          String(tRel) + "," +
 
          String(s.ax, 4) + "," +
@@ -114,6 +145,57 @@ String formatSampleCSV(
 
          String(s.accelMag, 4) + "," +
          String(s.gyroMag, 2) + "\n";
+}
+
+// =====================================================
+// QUEUE
+// =====================================================
+
+void clearQueue() {
+  queueCount = 0;
+  uploading = false;
+
+  for (int i = 0; i < MAX_THROWS; i++) {
+    throwQueue[i].waitingForAck = false;
+  }
+}
+
+void dequeueOldestThrow() {
+  if (queueCount <= 0) {
+    return;
+  }
+
+  for (int i = 1; i < queueCount; i++) {
+    throwQueue[i - 1] = throwQueue[i];
+  }
+
+  queueCount--;
+}
+
+void queueCompletedThrow(unsigned long flightTimeMs) {
+  if (queueCount >= MAX_THROWS) {
+    if (connected) {
+      sendState("QUEUE_FULL");
+    }
+    return;
+  }
+
+  CompletedThrow& queuedThrow = throwQueue[queueCount];
+  queuedThrow.id = throwID;
+  copyLabel(queuedThrow.label, currentThrowLabel);
+  queuedThrow.flightTimeMs = flightTimeMs;
+  queuedThrow.maxAccel = activeMaxAccel;
+  queuedThrow.maxGyro = activeMaxGyro;
+  queuedThrow.sampleCount = recordingCount;
+  queuedThrow.waitingForAck = false;
+  queuedThrow.uploadCompleteMs = 0;
+
+  for (int i = 0; i < recordingCount; i++) {
+    queuedThrow.samples[i] = recordingBuffer[i];
+  }
+
+  queueCount++;
+  sendState("UPLOAD_READY");
 }
 
 // =====================================================
@@ -135,17 +217,50 @@ void processBLECommand(String cmd) {
     );
   }
 
-  else if (cmd == "STATUS") {
+  else if (cmd == "ACK_THROW") {
+    if (queueCount > 0 && throwQueue[0].waitingForAck) {
+      dequeueOldestThrow();
+      sendState("THROW_CONFIRMED");
 
-    blePrint("STATE:READY\n");
+      if (queueCount == 0) {
+        sendState("QUEUE_EMPTY");
+      } else {
+        sendState("UPLOAD_READY");
+      }
+
+      currentThrowLabel = "unlabeled";
+    } else {
+      Serial.println("ACK_THROW ignored: no uploaded throw waiting for ACK");
+    }
+  }
+
+  else if (cmd == "STATUS") {
+    if (queueCount == 0) {
+      sendState("QUEUE_EMPTY");
+    } else {
+      sendState("UPLOAD_READY");
+    }
   }
 
   else if (cmd == "CLEAR") {
 
-    storageCount = 0;
+    clearQueue();
+    recordingCount = 0;
 
     blePrint("STATE:CLEARED\n");
   }
+}
+
+String readBLECommand() {
+  String cmd = "";
+  int len = rxCharacteristic.valueLength();
+  const uint8_t* rawData = rxCharacteristic.value();
+
+  for (int i = 0; i < len; i++) {
+    cmd += (char)rawData[i];
+  }
+
+  return cmd;
 }
 
 // =====================================================
@@ -155,6 +270,8 @@ void processBLECommand(String cmd) {
 void setup() {
 
   delay(2000);
+
+  Serial.begin(115200);
 
   if (!IMU.begin()) {
     while (1);
@@ -174,8 +291,111 @@ void setup() {
   BLE.addService(uartService);
 
   BLE.advertise();
+}
 
-  bleActive = true;
+// =====================================================
+// UPLOAD
+// =====================================================
+
+bool uploadOldestQueuedThrow() {
+  if (queueCount == 0 || uploading || throwQueue[0].waitingForAck) {
+    return false;
+  }
+
+  CompletedThrow& queuedThrow = throwQueue[0];
+  uploading = true;
+
+  if (!blePrint("BEGIN_THROW\n")) {
+    uploading = false;
+    return false;
+  }
+
+  sendState("UPLOADING");
+
+  if (!blePrint(
+      "sample_index,throw_id,label,time_ms,"
+      "ax,ay,az,gx,gy,gz,mx,my,mz,"
+      "accel_mag,gyro_mag\n"
+    )) {
+    uploading = false;
+    return false;
+  }
+
+  unsigned long t0 = queuedThrow.samples[0].t;
+
+  for (int i = 0; i < queuedThrow.sampleCount; i++) {
+    if (!connected || !txCharacteristic.subscribed()) {
+      uploading = false;
+      return false;
+    }
+
+    unsigned long relativeMs =
+      (queuedThrow.samples[i].t - t0) / 1000;
+
+    if (!blePrint(
+        formatSampleCSV(
+          queuedThrow.id,
+          queuedThrow.label,
+          i,
+          relativeMs,
+          queuedThrow.samples[i]
+        )
+      )) {
+      uploading = false;
+      return false;
+    }
+  }
+
+  if (!blePrint(
+      "#METADATA,{\"throw_id\":" +
+      String(queuedThrow.id) +
+      ", \"label\":\"" +
+      String(queuedThrow.label) +
+      "\", \"samples\":" +
+      String(queuedThrow.sampleCount) +
+      ", \"flight_time_ms\":" +
+      String(queuedThrow.flightTimeMs) +
+      ", \"max_accel\":" +
+      String(queuedThrow.maxAccel, 4) +
+      ", \"max_gyro\":" +
+      String(queuedThrow.maxGyro, 2) +
+      "}\n"
+    )) {
+    uploading = false;
+    return false;
+  }
+
+  if (!blePrint("END_THROW\n")) {
+    uploading = false;
+    return false;
+  }
+
+  queuedThrow.waitingForAck = true;
+  queuedThrow.uploadCompleteMs = millis();
+  uploading = false;
+  sendState("UPLOAD_COMPLETE");
+  return true;
+}
+
+void checkAckTimeout() {
+  if (queueCount == 0 || !throwQueue[0].waitingForAck) {
+    return;
+  }
+
+  if (!connected || !txCharacteristic.subscribed()) {
+    return;
+  }
+
+  unsigned long elapsed = millis() - throwQueue[0].uploadCompleteMs;
+
+  if (elapsed < ACK_TIMEOUT_MS) {
+    return;
+  }
+
+  throwQueue[0].waitingForAck = false;
+  throwQueue[0].uploadCompleteMs = 0;
+  Serial.println("ACK timeout; oldest throw will retry upload");
+  sendState("UPLOAD_READY");
 }
 
 // =====================================================
@@ -185,23 +405,41 @@ void setup() {
 void loop() {
 
   BLEDevice central = BLE.central();
+  bool nowConnected = central && central.connected();
+
+  if (nowConnected && !connected) {
+    connected = true;
+    Serial.println("STATE:CONNECTED");
+  } else if (!nowConnected && connected) {
+    sendState("DISCONNECTED");
+    connected = false;
+    subscribed = false;
+    uploading = false;
+    Serial.println("STATE:DISCONNECTED");
+  }
+
+  bool nowSubscribed = connected && txCharacteristic.subscribed();
+
+  if (nowSubscribed && !subscribed) {
+    subscribed = true;
+    sendState("CONNECTED");
+
+    if (queueCount == 0) {
+      sendState("QUEUE_EMPTY");
+    } else {
+      sendState("UPLOAD_READY");
+    }
+  } else if (!nowSubscribed && subscribed) {
+    subscribed = false;
+    uploading = false;
+  }
 
   // =====================================================
   // HANDLE BLE COMMANDS
   // =====================================================
 
-  if (central && central.connected()) {
-
-    if (rxCharacteristic.written()) {
-
-      const uint8_t* rawData =
-        rxCharacteristic.value();
-
-      String cmd =
-        String((char*)rawData);
-
-      processBLECommand(cmd);
-    }
+  if (connected && rxCharacteristic.written()) {
+    processBLECommand(readBLECommand());
   }
 
   // =====================================================
@@ -268,7 +506,6 @@ void loop() {
   // =====================================================
 
   if (!recording &&
-      storageCount == 0 &&
       sample.accelMag > THROW_ACCEL_THRESHOLD &&
       sample.gyroMag > THROW_GYRO_THRESHOLD) {
 
@@ -278,18 +515,23 @@ void loop() {
 
     throwID++;
 
-    storageCount = 0;
+    recordingCount = 0;
+    activeMaxAccel = 0.0;
+    activeMaxGyro = 0.0;
 
     int idx = preIndex;
 
     for (int i = 0; i < PRE_TRIGGER_SAMPLES; i++) {
 
-      if (storageCount < MAX_STORAGE_SAMPLES) {
+      if (recordingCount < MAX_STORAGE_SAMPLES) {
 
-        storageBuffer[storageCount] =
+        recordingBuffer[recordingCount] =
           preBuffer[idx];
 
-        storageCount++;
+        activeMaxAccel = max(activeMaxAccel, preBuffer[idx].accelMag);
+        activeMaxGyro = max(activeMaxGyro, preBuffer[idx].gyroMag);
+
+        recordingCount++;
       }
 
       idx++;
@@ -299,7 +541,7 @@ void loop() {
       }
     }
 
-    blePrint("STATE:RECORDING\n");
+    sendState("RECORDING");
   }
 
   // =====================================================
@@ -308,11 +550,14 @@ void loop() {
 
   if (recording) {
 
-    if (storageCount < MAX_STORAGE_SAMPLES) {
+    if (recordingCount < MAX_STORAGE_SAMPLES) {
 
-      storageBuffer[storageCount] = sample;
+      recordingBuffer[recordingCount] = sample;
 
-      storageCount++;
+      activeMaxAccel = max(activeMaxAccel, sample.accelMag);
+      activeMaxGyro = max(activeMaxGyro, sample.gyroMag);
+
+      recordingCount++;
     }
 
     unsigned long throwDuration =
@@ -328,9 +573,9 @@ void loop() {
     if (catchDetected || timeoutDetected) {
 
       recording = false;
-      // Flight finishes. The data safely rests in storageBuffer waiting for sync.
       Serial.println("Flight finished");
-      blePrint("STATE:UPLOAD_READY\n");
+      queueCompletedThrow(throwDuration);
+      recordingCount = 0;
     }
   }
 
@@ -339,65 +584,11 @@ void loop() {
   // =====================================================
 
   if (!recording &&
-      storageCount > 0 &&
-      central &&
-      central.connected() &&
+      queueCount > 0 &&
+      connected &&
       txCharacteristic.subscribed()) {
-
-    // BEGIN THROW
-    blePrint("BEGIN_THROW\n");
-
-    // Upload state
-    blePrint("STATE:UPLOADING\n");
-
-    // CSV Header
-    blePrint(
-      "sample_index,throw_id,label,time_ms,"
-      "ax,ay,az,gx,gy,gz,mx,my,mz,"
-      "accel_mag,gyro_mag\n"
-    );
-
-    unsigned long t0 = storageBuffer[0].t;
-
-    // Send samples
-    for (int i = 0; i < storageCount; i++) {
-
-      unsigned long relativeMs =
-        (storageBuffer[i].t - t0) / 1000;
-
-      blePrint(
-        formatSampleCSV(
-          throwID,
-          currentThrowLabel,
-          i,
-          relativeMs,
-          storageBuffer[i]
-        )
-      );
-    }
-
-    // Metadata
-    blePrint(
-      "#METADATA,"
-      "{\"throw_id\":" +
-      String(throwID) +
-      ",\"label\":\"" +
-      currentThrowLabel +
-      "\",\"samples\":" +
-      String(storageCount) +
-      "}\n"
-    );
-
-    // End marker
-    blePrint("END_THROW\n");
-
-    // Upload complete
-    blePrint("STATE:UPLOAD_COMPLETE\n");
-
-    // Reset storage
-    storageCount = 0;
-
-    // Reset label
-    currentThrowLabel = "unlabeled";
+    uploadOldestQueuedThrow();
   }
+
+  checkAckTimeout();
 }

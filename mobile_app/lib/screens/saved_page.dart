@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/throw_data.dart';
+import 'throw_detail_page.dart';
 
 class SavedPage extends StatelessWidget {
 
@@ -42,9 +43,11 @@ class SavedPage extends StatelessWidget {
 
     await file.writeAsString(csv);
 
-    await Share.shareXFiles(
-      [XFile(file.path)],
-      text: "Frisbee throw dataset",
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path)],
+        text: "Frisbee throw dataset",
+      ),
     );
   }
 
@@ -80,13 +83,29 @@ class SavedPage extends StatelessWidget {
             margin: const EdgeInsets.all(8),
 
             child: ListTile(
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ThrowDetailPage(
+                      throwData: throwData,
+                    ),
+                  ),
+                );
+              },
 
               title: Text(throwData.label),
 
               subtitle: Text(
                 "Flight Time: "
-                "${throwData.flightTime.toStringAsFixed(2)} s",
+                "${throwData.flightTime.toStringAsFixed(2)} s\n"
+                "Max Accel: "
+                "${throwData.maxAccel.toStringAsFixed(2)} g | "
+                "Max Gyro: "
+                "${throwData.maxGyro.toStringAsFixed(0)}\n"
+                "Wobbly: "
+                "${throwData.wobble ? "Yes" : "No"}",
               ),
+              isThreeLine: true,
 
               trailing: IconButton(
 
