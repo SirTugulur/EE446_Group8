@@ -21,27 +21,42 @@ class SavedPage extends StatelessWidget {
 
   Future<void> exportCSV() async {
 
-    String csv =
-        "throw_id,label,flight_time,max_accel,max_gyro,wobble\n";
+    final csv = StringBuffer(
+      "sample_index,throw_id,label,time_ms,"
+      "ax,ay,az,gx,gy,gz,mx,my,mz,"
+      "accel_mag,gyro_mag,wobble\n",
+    );
 
     for (var t in savedThrows) {
-
-      csv +=
-          "${t.throwId},"
-          "${t.label},"
-          "${t.flightTime},"
-          "${t.maxAccel},"
-          "${t.maxGyro},"
-          "${t.wobble}\n";
+      for (final sample in t.samples) {
+        csv.writeln(
+          "${sample.sampleIndex},"
+          "${sample.throwId},"
+          "${sample.label},"
+          "${sample.timeMs},"
+          "${sample.ax},"
+          "${sample.ay},"
+          "${sample.az},"
+          "${sample.gx},"
+          "${sample.gy},"
+          "${sample.gz},"
+          "${sample.mx},"
+          "${sample.my},"
+          "${sample.mz},"
+          "${sample.accelMag},"
+          "${sample.gyroMag},"
+          "${t.wobble}",
+        );
+      }
     }
 
     final dir =
         await getTemporaryDirectory();
 
     final file =
-        File("${dir.path}/throws.csv");
+        File("${dir.path}/throw_samples.csv");
 
-    await file.writeAsString(csv);
+    await file.writeAsString(csv.toString());
 
     await SharePlus.instance.share(
       ShareParams(

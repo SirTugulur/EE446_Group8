@@ -17,6 +17,7 @@ const int MAX_STORAGE_SAMPLES = 800;
 const int MAX_THROWS = 3;
 const int MAX_LABEL_LEN = 24;
 const unsigned long ACK_TIMEOUT_MS = 10000;
+const int UPLOAD_PACKET_DELAY_MS = 5;
 
 // =====================================================
 // THROW LABEL
@@ -105,13 +106,17 @@ bool blePrint(String msg) {
   }
 
   txCharacteristic.writeValue((const uint8_t*)msg.c_str(), msg.length());
-  delay(15);
+  delay(UPLOAD_PACKET_DELAY_MS);
   return true;
 }
 
 void sendState(const String& state) {
   blePrint("STATE:" + state + "\n");
   Serial.println("STATE:" + state);
+}
+
+void sendQueueCount() {
+  sendState("QUEUE_COUNT:" + String(queueCount));
 }
 
 // =====================================================
@@ -176,6 +181,7 @@ void queueCompletedThrow(unsigned long flightTimeMs) {
   if (queueCount >= MAX_THROWS) {
     if (connected) {
       sendState("QUEUE_FULL");
+      sendQueueCount();
     }
     return;
   }
@@ -196,6 +202,7 @@ void queueCompletedThrow(unsigned long flightTimeMs) {
 
   queueCount++;
   sendState("UPLOAD_READY");
+  sendQueueCount();
 }
 
 // =====================================================
@@ -228,6 +235,8 @@ void processBLECommand(String cmd) {
         sendState("UPLOAD_READY");
       }
 
+      sendQueueCount();
+
       currentThrowLabel = "unlabeled";
     } else {
       Serial.println("ACK_THROW ignored: no uploaded throw waiting for ACK");
@@ -240,6 +249,7 @@ void processBLECommand(String cmd) {
     } else {
       sendState("UPLOAD_READY");
     }
+    sendQueueCount();
   }
 
   else if (cmd == "CLEAR") {
@@ -248,6 +258,7 @@ void processBLECommand(String cmd) {
     recordingCount = 0;
 
     blePrint("STATE:CLEARED\n");
+    sendQueueCount();
   }
 }
 
@@ -374,6 +385,7 @@ bool uploadOldestQueuedThrow() {
   queuedThrow.uploadCompleteMs = millis();
   uploading = false;
   sendState("UPLOAD_COMPLETE");
+  sendQueueCount();
   return true;
 }
 
@@ -429,6 +441,7 @@ void loop() {
     } else {
       sendState("UPLOAD_READY");
     }
+    sendQueueCount();
   } else if (!nowSubscribed && subscribed) {
     subscribed = false;
     uploading = false;

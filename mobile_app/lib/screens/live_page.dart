@@ -57,6 +57,8 @@ class _LivePageState extends State<LivePage> {
 
   bool isConnected = false;
   bool isConnecting = false;
+  int? queuedThrowCount;
+  String bleStatus = "Disconnected";
 
   BluetoothDevice? connectedDevice;
   BluetoothCharacteristic? uartTxCharacteristic;
@@ -182,6 +184,7 @@ class _LivePageState extends State<LivePage> {
       safeSetState(() {
         connectedDevice = connected ? device : connectedDevice;
         isConnected = connected;
+        bleStatus = connected ? "Connected" : "Disconnected";
       });
 
       if (connected) {
@@ -194,6 +197,7 @@ class _LivePageState extends State<LivePage> {
       uartTxCharacteristic = null;
       uartRxCharacteristic = null;
       activeUpload = null;
+      queuedThrowCount = null;
 
       if (_lastFrisbeeTrackRemoteId == device.remoteId.toString() && mounted) {
         debugPrint(
@@ -253,6 +257,7 @@ class _LivePageState extends State<LivePage> {
     });
 
     await txCharacteristic.setNotifyValue(true);
+    await _sendSelectedThrowLabel();
     debugPrint("Subscribed to Nordic UART TX notifications.");
   }
 
@@ -282,6 +287,7 @@ class _LivePageState extends State<LivePage> {
       }
 
       if (line.startsWith("STATE:")) {
+        _handleBleState(line);
         debugPrint("BLE state: $line");
         continue;
       }
@@ -303,6 +309,39 @@ class _LivePageState extends State<LivePage> {
       } else {
         debugPrint("Skipped unknown BLE line: $line");
       }
+    }
+  }
+
+  void _handleBleState(String line) {
+    final state = line.substring("STATE:".length);
+
+    if (state.startsWith("QUEUE_COUNT:")) {
+      final count = int.tryParse(state.substring("QUEUE_COUNT:".length));
+      safeSetState(() {
+        queuedThrowCount = count;
+      });
+      return;
+    }
+
+    safeSetState(() {
+      bleStatus = state;
+    });
+  }
+
+  Future<void> _sendSelectedThrowLabel([String? selectedLabel]) async {
+    final label = selectedLabel ?? widget.selectedThrowType;
+    final rxCharacteristic = uartRxCharacteristic;
+
+    if (rxCharacteristic == null) {
+      debugPrint("Cannot send label '$label': Nordic UART RX not ready.");
+      return;
+    }
+
+    try {
+      await rxCharacteristic.write(ascii.encode("LABEL:$label"));
+      debugPrint("Sent throw label: $label");
+    } catch (e) {
+      debugPrint("Throw label write failed: $e");
     }
   }
 
@@ -459,7 +498,7 @@ class _LivePageState extends State<LivePage> {
 
               Text(
                 isConnected
-                    ? "BLE Connected"
+                    ? "BLE $bleStatus"
                     : isConnecting
                     ? "BLE Connecting"
                     : "BLE Disconnected",
@@ -477,6 +516,10 @@ class _LivePageState extends State<LivePage> {
 
             child: const Text("Scan For Devices"),
           ),
+
+          const SizedBox(height: 8),
+
+          Text(_queueStatusText()),
 
           const SizedBox(height: 10),
 
@@ -525,7 +568,10 @@ class _LivePageState extends State<LivePage> {
               return DropdownMenuItem(value: type, child: Text(type));
             }).toList(),
 
-            onChanged: widget.onThrowTypeChanged,
+            onChanged: (value) async {
+              widget.onThrowTypeChanged(value);
+              await _sendSelectedThrowLabel(value);
+            },
           ),
 
           const SizedBox(height: 10),
@@ -630,5 +676,23 @@ class _LivePageState extends State<LivePage> {
         ],
       ),
     );
+  }
+
+  String _queueStatusText() {
+    final count = queuedThrowCount;
+
+    if (count == null) {
+      return "Queue: unknown";
+    }
+
+    if (count == 0) {
+      return "Queue: empty";
+    }
+
+    if (count == 1) {
+      return "Queue: 1 throw waiting to upload";
+    }
+
+    return "Queue: $count throws waiting to upload";
   }
 }
