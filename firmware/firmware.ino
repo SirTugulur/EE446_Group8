@@ -20,7 +20,8 @@ const int MAX_STORAGE_SAMPLES = 500; // REDUCED: Protects SRAM
 const int MAX_THROWS = 2;            // REDUCED: Protects SRAM
 const int MAX_LABEL_LEN = 24;
 const unsigned long ACK_TIMEOUT_MS = 10000;
-const int UPLOAD_PACKET_DELAY_MS = 5;
+const int UPLOAD_PACKET_DELAY_MS = 2;
+const int MAX_UPLOAD_PACKET_BYTES = 220;
 
 // =====================================================
 // THROW LABEL
@@ -216,7 +217,6 @@ void processBLECommand(String cmd) {
       }
 
       sendQueueCount();
-      currentThrowLabel = "unlabeled";
     } else {
       Serial.println("ACK_THROW ignored: no uploaded throw waiting for ACK");
     }
@@ -302,10 +302,29 @@ void handleAsyncUpload() {
     case SAMPLES:
       if (uploadSampleIndex < queuedThrow.sampleCount) {
         unsigned long t0 = queuedThrow.samples[0].t;
-        unsigned long relativeMs = (queuedThrow.samples[uploadSampleIndex].t - t0) / 1000;
-        
-        if (blePrint(formatSampleCSV(queuedThrow.id, queuedThrow.label, uploadSampleIndex, relativeMs, queuedThrow.samples[uploadSampleIndex]))) {
+        String packet = "";
+
+        while (uploadSampleIndex < queuedThrow.sampleCount) {
+          unsigned long relativeMs = (queuedThrow.samples[uploadSampleIndex].t - t0) / 1000;
+          String row = formatSampleCSV(
+            queuedThrow.id,
+            queuedThrow.label,
+            uploadSampleIndex,
+            relativeMs,
+            queuedThrow.samples[uploadSampleIndex]
+          );
+
+          if (packet.length() > 0 &&
+              packet.length() + row.length() > MAX_UPLOAD_PACKET_BYTES) {
+            break;
+          }
+
+          packet += row;
           uploadSampleIndex++;
+        }
+
+        if (packet.length() > 0 && !blePrint(packet)) {
+          return;
         }
       } else {
         uploadPhase = METADATA;

@@ -57,6 +57,7 @@ class _LivePageState extends State<LivePage> {
 
   bool isConnected = false;
   bool isConnecting = false;
+  bool autoConnectEnabled = true;
   int? queuedThrowCount;
   String bleStatus = "Disconnected";
 
@@ -123,7 +124,7 @@ class _LivePageState extends State<LivePage> {
         scanResults = results;
       });
 
-      _connectToPreviousDeviceFromScan(results);
+      _connectToKnownFrisbeeTrackDevice(results);
     });
 
     await FlutterBluePlus.stopScan();
@@ -131,19 +132,42 @@ class _LivePageState extends State<LivePage> {
     await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
   }
 
-  void _connectToPreviousDeviceFromScan(List<ScanResult> results) {
-    final remoteId = _lastFrisbeeTrackRemoteId;
-
-    if (remoteId == null || isConnected || isConnecting) {
+  void _connectToKnownFrisbeeTrackDevice(List<ScanResult> results) {
+    if (!autoConnectEnabled || isConnected || isConnecting) {
       return;
     }
 
+    final remoteId = _lastFrisbeeTrackRemoteId;
+
     for (final result in results) {
-      if (result.device.remoteId.toString() == remoteId) {
+      if (remoteId != null && result.device.remoteId.toString() == remoteId) {
+        debugPrint(
+          "Auto-connecting to previous FrisbeeTrack: ${result.device.remoteId}",
+        );
         connectToDevice(result.device, autoConnect: true);
         return;
       }
     }
+
+    for (final result in results) {
+      if (_isFrisbeeTrackResult(result)) {
+        debugPrint(
+          "Auto-connecting to FrisbeeTrack by advertised name: ${result.device.remoteId}",
+        );
+        connectToDevice(result.device, autoConnect: true);
+        return;
+      }
+    }
+  }
+
+  bool _isFrisbeeTrackResult(ScanResult result) {
+    final platformName = result.device.platformName.toLowerCase();
+    final advertisedName = result.device.advName.toLowerCase();
+
+    return platformName == "frisbeetrack" ||
+        advertisedName == "frisbeetrack" ||
+        platformName.contains("frisbee") ||
+        advertisedName.contains("frisbee");
   }
 
   Future<void> connectToDevice(
@@ -203,6 +227,10 @@ class _LivePageState extends State<LivePage> {
         debugPrint(
           "FrisbeeTrack disconnected; auto reconnect remains enabled.",
         );
+      }
+
+      if (mounted && autoConnectEnabled) {
+        unawaited(scanForDevices());
       }
     });
   }
@@ -431,6 +459,7 @@ class _LivePageState extends State<LivePage> {
       "Stored throw $throwId with ${upload.samples.length} samples. Sending ACK.",
     );
     await _acknowledgeThrow();
+    await _sendSelectedThrowLabel();
   }
 
   Future<void> _acknowledgeThrow() async {
@@ -520,6 +549,20 @@ class _LivePageState extends State<LivePage> {
           const SizedBox(height: 8),
 
           Text(_queueStatusText()),
+
+          SwitchListTile(
+            title: const Text("Auto-connect FrisbeeTrack"),
+            value: autoConnectEnabled,
+            onChanged: (value) {
+              safeSetState(() {
+                autoConnectEnabled = value;
+              });
+
+              if (value) {
+                scanForDevices();
+              }
+            },
+          ),
 
           const SizedBox(height: 10),
 
