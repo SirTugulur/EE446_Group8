@@ -503,4 +503,18 @@ void loop() {
       recording = false;
       Serial.println("Flight finished (Timeout)");
       queueCompletedThrow(throwDuration);
-      recordingCount
+      recordingCount = 0;
+      inLowSpin = false;
+    }
+  }
+
+  // =====================================================
+  // DATA UPLOAD (Non-Blocking)
+  // =====================================================
+
+  if (!recording && queueCount > 0) {
+    handleAsyncUpload();
+  }
+
+  checkAckTimeout();
+}
