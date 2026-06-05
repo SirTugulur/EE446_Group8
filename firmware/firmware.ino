@@ -9,14 +9,14 @@ const float THROW_ACCEL_THRESHOLD = 2.5;   // g
 const float THROW_GYRO_THRESHOLD  = 150.0; // deg/sec
 
 // NEW: Gyro decay thresholds for catch/drop detection
-const float CATCH_GYRO_THRESHOLD  = 50.0;  // deg/sec (spin has mostly stopped)
-const unsigned long CATCH_DEBOUNCE_MS = 100; // How long spin must remain dead
+const float CATCH_GYRO_THRESHOLD  = 100.0;  // deg/sec (spin has mostly stopped)
+const unsigned long CATCH_DEBOUNCE_MS = 200; // How long spin must remain dead
 
-const unsigned long MAX_THROW_MS = 4000;
-const unsigned long MIN_THROW_MS = 300;
+const unsigned long MAX_THROW_MS = 5000;
+const unsigned long MIN_THROW_MS = 250;
 
 const int PRE_TRIGGER_SAMPLES = 30;
-const int MAX_STORAGE_SAMPLES = 500; // REDUCED: Protects SRAM
+const int MAX_STORAGE_SAMPLES = 550; // REDUCED: Protects SRAM
 const int MAX_THROWS = 2;            // REDUCED: Protects SRAM
 const int MAX_LABEL_LEN = 24;
 const unsigned long ACK_TIMEOUT_MS = 10000;
