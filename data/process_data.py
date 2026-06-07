@@ -1,6 +1,7 @@
 import pandas as pd
 import glob
 import os
+from datetime import datetime
 
 # ==========================================
 # Configuration
@@ -23,11 +24,12 @@ def process_all_root_csvs(directory):
         print("No CSV files found in the root directory.")
         return []
 
+    # Generate a single timestamp for this specific run (Format: YYYYMMDD_HHMMSS)
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     total_split = 0
 
     for file_path in root_csvs:
         print(f"\nProcessing {os.path.basename(file_path)}...")
-        base_filename = os.path.splitext(os.path.basename(file_path))[0]
 
         try:
             df = pd.read_csv(file_path)
@@ -54,8 +56,8 @@ def process_all_root_csvs(directory):
                 # Remove the temporary tracking column before saving
                 output_data = group_data.drop(columns=['unique_throw_block'])
 
-                # Format: label_filename_throw_001.csv (zero-padded for perfect sorting)
-                formatted_name = f"{clean_label}_{base_filename}_throw_{block_id:03d}.csv"
+                # Format: label_timestamp_001.csv
+                formatted_name = f"{clean_label}_{run_timestamp}_{block_id:03d}.csv"
                 output_filename = os.path.join(directory, clean_label, formatted_name)
 
                 # Save to CSV
@@ -65,7 +67,7 @@ def process_all_root_csvs(directory):
 
             print(f"  -> Split into {count} individual throw CSVs.")
 
-            # --- NEW: Delete the original root file after successful split ---
+            # Delete the original root file after successful split
             os.remove(file_path)
             print(f"  -> Deleted original file: {os.path.basename(file_path)}")
 
@@ -86,7 +88,6 @@ def clean_duplicate_timestamps(directory, exclude_files):
     all_csv_files = glob.glob(search_pattern, recursive=True)
 
     # Convert exclude list to absolute paths for safe comparison
-    # (Even though they are deleted, this is a good safety net in case of partial failures)
     exclude_paths = {os.path.abspath(f) for f in exclude_files}
 
     # Filter out the root files we just processed so we only scrub the split throws
