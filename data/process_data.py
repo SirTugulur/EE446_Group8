@@ -1,51 +1,136 @@
 import pandas as pd
+import glob
 import os
 
 # ==========================================
 # Configuration
 # ==========================================
-input_csv = 'all_throws.csv'  # Replace with your actual file name
+ROOT_DIRECTORY = '.'  # Set to the directory containing your loose CSVs
 
 # ==========================================
-# Processing
+# Step 1: Split Throws (Root Files Only)
 # ==========================================
-def split_throws(file_path):
-    print(f"Loading data from {file_path}...")
-    df = pd.read_csv(file_path)
+def process_all_root_csvs(directory):
+    print("--- STEP 1: SPLITTING THROWS ---")
 
-    # 1. Drop the throw index column
-    if 'throw_id' in df.columns:
-        df = df.drop(columns=['throw_id'])
-        print("Dropped 'throw_id' column.")
+    # Get all CSV files ONLY in the root directory (ignoring subfolders)
+    root_csvs = [
+        os.path.join(directory, f) for f in os.listdir(directory)
+        if f.endswith('.csv') and os.path.isfile(os.path.join(directory, f))
+    ]
 
-    # 2. Identify the start of a new throw
-    # Creates a boolean mask (True) every time sample_index or time_ms is 0
-    new_throw_mask = (df['sample_index'] == 0) | (df['time_ms'] == 0)
+    if not root_csvs:
+        print("No CSV files found in the root directory.")
+        return []
 
-    # 3. Assign a unique ID to each throw block
-    # cumulative sum increases by 1 every time it sees a True in the mask
-    df['unique_throw_block'] = new_throw_mask.cumsum()
+    total_split = 0
 
-    # 4. Group the data and export
-    grouped = df.groupby(['label', 'unique_throw_block'])
+    for file_path in root_csvs:
+        print(f"\nProcessing {os.path.basename(file_path)}...")
+        base_filename = os.path.splitext(os.path.basename(file_path))[0]
 
-    count = 0
-    for (label, block_id), group_data in grouped:
-        # Create the folder for the throw type (e.g., 'Forehand') if it doesn't exist
-        os.makedirs(label, exist_ok=True)
+        try:
+            df = pd.read_csv(file_path)
 
-        # Remove the temporary tracking column before saving
-        output_data = group_data.drop(columns=['unique_throw_block'])
+            # Drop the throw index column
+            if 'throw_id' in df.columns:
+                df = df.drop(columns=['throw_id'])
 
-        # Define the output path (e.g., Forehand/throw_1.csv)
-        output_filename = os.path.join(label, f"throw_{block_id}.csv")
+            # Identify the start of a new throw
+            new_throw_mask = (df['sample_index'] == 0) | (df['time_ms'] == 0)
+            df['unique_throw_block'] = new_throw_mask.cumsum()
 
-        # Save to CSV, keeping headers but dropping pandas row indices
-        output_data.to_csv(output_filename, index=False)
-        count += 1
+            # Group the data and export
+            grouped = df.groupby(['label', 'unique_throw_block'])
 
-    print(f"Successfully split into {count} individual throw CSVs!")
+            count = 0
+            for (label, block_id), group_data in grouped:
+                # Force the label to be strictly lowercase and strip whitespace
+                clean_label = str(label).strip().lower()
 
-# Run the script
+                # Create the lowercase folder for the throw type
+                os.makedirs(os.path.join(directory, clean_label), exist_ok=True)
+
+                # Remove the temporary tracking column before saving
+                output_data = group_data.drop(columns=['unique_throw_block'])
+
+                # Format: label_filename_throw_001.csv (zero-padded for perfect sorting)
+                formatted_name = f"{clean_label}_{base_filename}_throw_{block_id:03d}.csv"
+                output_filename = os.path.join(directory, clean_label, formatted_name)
+
+                # Save to CSV
+                output_data.to_csv(output_filename, index=False)
+                count += 1
+                total_split += 1
+
+            print(f"  -> Split into {count} individual throw CSVs.")
+
+            # --- NEW: Delete the original root file after successful split ---
+            os.remove(file_path)
+            print(f"  -> Deleted original file: {os.path.basename(file_path)}")
+
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+
+    print(f"\nSuccessfully split a total of {total_split} throws across all root files!\n")
+    return root_csvs
+
+# ==========================================
+# Step 2: Clean Duplicates
+# ==========================================
+def clean_duplicate_timestamps(directory, exclude_files):
+    print("--- STEP 2: CLEANING DUPLICATES ---")
+
+    # Recursively find all CSV files (including subfolders)
+    search_pattern = os.path.join(directory, '**', '*.csv')
+    all_csv_files = glob.glob(search_pattern, recursive=True)
+
+    # Convert exclude list to absolute paths for safe comparison
+    # (Even though they are deleted, this is a good safety net in case of partial failures)
+    exclude_paths = {os.path.abspath(f) for f in exclude_files}
+
+    # Filter out the root files we just processed so we only scrub the split throws
+    all_csv_files = [f for f in all_csv_files if os.path.abspath(f) not in exclude_paths]
+
+    print(f"Found {len(all_csv_files)} split CSV files. Beginning scan...")
+
+    files_modified = 0
+    total_duplicates_removed = 0
+
+    for file_path in all_csv_files:
+        try:
+            df = pd.read_csv(file_path)
+
+            if 'time_ms' in df.columns and 'sample_index' in df.columns:
+                original_row_count = len(df)
+
+                # Drop rows where the 'time_ms' is identical to a previous row
+                df = df.drop_duplicates(subset=['time_ms'], keep='first')
+
+                new_row_count = len(df)
+                duplicates_found = original_row_count - new_row_count
+
+                # If duplicates were removed, fix the index and save
+                if duplicates_found > 0:
+                    df['sample_index'] = range(len(df))
+                    df.to_csv(file_path, index=False)
+
+                    print(f"Cleaned: {os.path.basename(file_path)} | Removed {duplicates_found} duplicate(s)")
+
+                    files_modified += 1
+                    total_duplicates_removed += duplicates_found
+
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+
+    print(f"Scan complete! Modified {files_modified} files and removed {total_duplicates_removed} total duplicate rows.")
+
+# ==========================================
+# Main Execution
+# ==========================================
 if __name__ == "__main__":
-    split_throws(input_csv)
+    # 1. Process all loose CSVs in the root folder, delete them, and get a list of what was processed
+    processed_root_files = process_all_root_csvs(ROOT_DIRECTORY)
+
+    # 2. Clean duplicates in all subfolders, explicitly ignoring the loose root files
+    clean_duplicate_timestamps(ROOT_DIRECTORY, exclude_files=processed_root_files)
