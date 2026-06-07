@@ -486,7 +486,7 @@ void loop() {
   // ACTIVE RECORDING & CATCH DETECTION
   // =====================================================
 
-  if (recording) {
+  else if (recording) {
 
     if (recordingCount < MAX_STORAGE_SAMPLES) {
       recordingBuffer[recordingCount] = sample;
