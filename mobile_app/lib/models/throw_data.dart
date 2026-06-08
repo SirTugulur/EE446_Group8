@@ -38,6 +38,8 @@ class ThrowData {
   final List<ThrowSample> samples;
 
   bool wobble;
+  bool? completed;
+  double? confidence;
 
   ThrowData({
     required this.throwId,
@@ -47,5 +49,7 @@ class ThrowData {
     required this.maxGyro,
     this.samples = const [],
     this.wobble = false,
+    this.completed,
+    this.confidence,
   });
 }

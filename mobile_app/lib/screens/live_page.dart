@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -15,27 +16,39 @@ class _BleThrowUpload {
 }
 
 class LivePage extends StatefulWidget {
+  final bool enableBluetoothStartup;
   final List<ThrowData> liveThrows;
 
   final Function(ThrowData) onSave;
   final Function(ThrowData) onDelete;
   final Function(ThrowData) onAddThrow;
+  final Function(ThrowData)? onClassifiedThrow;
   final Function(ThrowData, bool) onWobbleChanged;
 
   final List<String> throwTypes;
   final String selectedThrowType;
+  final String bleModeCommand;
+  final bool showAppBar;
+  final bool showCollectionControls;
+  final bool showPendingThrows;
 
   final Function(String?) onThrowTypeChanged;
 
   const LivePage({
     super.key,
+    this.enableBluetoothStartup = true,
     required this.liveThrows,
     required this.onSave,
     required this.onDelete,
     required this.onAddThrow,
+    this.onClassifiedThrow,
     required this.onWobbleChanged,
     required this.throwTypes,
     required this.selectedThrowType,
+    this.bleModeCommand = "MODE:COLLECT",
+    this.showAppBar = true,
+    this.showCollectionControls = true,
+    this.showPendingThrows = true,
     required this.onThrowTypeChanged,
   });
 
@@ -71,13 +84,16 @@ class _LivePageState extends State<LivePage> {
 
   List<ScanResult> scanResults = [];
   _BleThrowUpload? activeUpload;
+  StateSetter? scannerSheetSetState;
 
   @override
   void initState() {
     super.initState();
 
-    _restorePreviousConnection();
-    scanForDevices();
+    if (widget.enableBluetoothStartup) {
+      _restorePreviousConnection();
+      scanForDevices();
+    }
   }
 
   @override
@@ -110,9 +126,7 @@ class _LivePageState extends State<LivePage> {
   }
 
   Future<void> scanForDevices() async {
-    await Permission.bluetoothScan.request();
-    await Permission.bluetoothConnect.request();
-    await Permission.location.request();
+    await _requestBlePermissions();
 
     safeSetState(() {
       scanResults.clear();
@@ -123,6 +137,7 @@ class _LivePageState extends State<LivePage> {
       safeSetState(() {
         scanResults = results;
       });
+      scannerSheetSetState?.call(() {});
 
       _connectToKnownFrisbeeTrackDevice(results);
     });
@@ -130,6 +145,24 @@ class _LivePageState extends State<LivePage> {
     await FlutterBluePlus.stopScan();
 
     await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+  }
+
+  Future<void> _requestBlePermissions() async {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        await Permission.bluetoothScan.request();
+        await Permission.bluetoothConnect.request();
+        await Permission.location.request();
+        return;
+      case TargetPlatform.iOS:
+        await Permission.bluetooth.request();
+        return;
+      case TargetPlatform.fuchsia:
+      case TargetPlatform.linux:
+      case TargetPlatform.macOS:
+      case TargetPlatform.windows:
+        return;
+    }
   }
 
   void _connectToKnownFrisbeeTrackDevice(List<ScanResult> results) {
@@ -285,6 +318,7 @@ class _LivePageState extends State<LivePage> {
     });
 
     await txCharacteristic.setNotifyValue(true);
+    await _sendDeviceMode();
     await _sendSelectedThrowLabel();
     debugPrint("Subscribed to Nordic UART TX notifications.");
   }
@@ -373,6 +407,22 @@ class _LivePageState extends State<LivePage> {
     }
   }
 
+  Future<void> _sendDeviceMode() async {
+    final rxCharacteristic = uartRxCharacteristic;
+
+    if (rxCharacteristic == null) {
+      debugPrint("Cannot send mode '${widget.bleModeCommand}': Nordic UART RX not ready.");
+      return;
+    }
+
+    try {
+      await rxCharacteristic.write(ascii.encode(widget.bleModeCommand));
+      debugPrint("Sent device mode: ${widget.bleModeCommand}");
+    } catch (e) {
+      debugPrint("Device mode write failed: $e");
+    }
+  }
+
   ThrowSample? _parseSampleLine(String line) {
     final parts = line.split(',');
 
@@ -436,6 +486,10 @@ class _LivePageState extends State<LivePage> {
     final maxAccel = (metadata["max_accel"] as num?)?.toDouble() ?? 0.0;
     final maxGyro = (metadata["max_gyro"] as num?)?.toDouble() ?? 0.0;
     final expectedSamples = (metadata["samples"] as num?)?.toInt();
+    final wobble = metadata["wobble"] as bool? ?? false;
+    final completed = metadata["completed"] as bool?;
+    final confidence = (metadata["confidence"] as num?)?.toDouble();
+    final mode = metadata["mode"] as String?;
 
     if (expectedSamples != null && expectedSamples != upload.samples.length) {
       debugPrint(
@@ -444,16 +498,23 @@ class _LivePageState extends State<LivePage> {
       return;
     }
 
-    widget.onAddThrow(
-      ThrowData(
-        throwId: throwId,
-        label: label,
-        flightTime: flightTimeMs / 1000.0,
-        maxAccel: maxAccel,
-        maxGyro: maxGyro,
-        samples: List.unmodifiable(upload.samples),
-      ),
+    final throwData = ThrowData(
+      throwId: throwId,
+      label: label,
+      flightTime: flightTimeMs / 1000.0,
+      maxAccel: maxAccel,
+      maxGyro: maxGyro,
+      samples: List.unmodifiable(upload.samples),
+      wobble: wobble,
+      completed: completed,
+      confidence: confidence,
     );
+
+    if (mode == "classification" && widget.onClassifiedThrow != null) {
+      widget.onClassifiedThrow!(throwData);
+    } else {
+      widget.onAddThrow(throwData);
+    }
 
     debugPrint(
       "Stored throw $throwId with ${upload.samples.length} samples. Sending ACK.",
@@ -503,144 +564,105 @@ class _LivePageState extends State<LivePage> {
 
   @override
   Widget build(BuildContext context) {
+    final body = _buildBody(context);
+
+    if (!widget.showAppBar) {
+      return body;
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text("Live Throws")),
+      body: body,
+    );
+  }
 
-      body: Column(
-        children: [
-          const SizedBox(height: 10),
-
-          //--------------------------------
-          // BLE STATUS
-          //--------------------------------
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-
+  Widget _buildBody(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Column(
             children: [
-              Icon(
-                Icons.circle,
-                color: isConnected ? Colors.green : Colors.red,
-                size: 14,
+              Row(
+                children: [
+                  Icon(
+                    Icons.circle,
+                    color: isConnected ? Colors.green : Colors.red,
+                    size: 14,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      isConnected
+                          ? "BLE $bleStatus"
+                          : isConnecting
+                          ? "BLE Connecting"
+                          : "BLE Disconnected",
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: "Scan devices",
+                    onPressed: _showDeviceScanner,
+                    icon: const Icon(Icons.bluetooth_searching),
+                  ),
+                ],
               ),
-
-              const SizedBox(width: 8),
-
-              Text(
-                isConnected
-                    ? "BLE $bleStatus"
-                    : isConnecting
-                    ? "BLE Connecting"
-                    : "BLE Disconnected",
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(child: Text(_queueStatusText())),
+                  if (widget.showCollectionControls) ...[
+                    const SizedBox(width: 12),
+                    DropdownButton<String>(
+                      value: widget.selectedThrowType,
+                      items: widget.throwTypes.map((type) {
+                        return DropdownMenuItem(value: type, child: Text(type));
+                      }).toList(),
+                      onChanged: (value) async {
+                        widget.onThrowTypeChanged(value);
+                        await _sendSelectedThrowLabel(value);
+                      },
+                    ),
+                  ],
+                ],
               ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text("Auto-connect FrisbeeTrack"),
+                value: autoConnectEnabled,
+                onChanged: (value) {
+                  safeSetState(() {
+                    autoConnectEnabled = value;
+                  });
+
+                  if (value) {
+                    scanForDevices();
+                  }
+                },
+              ),
+              if (widget.showCollectionControls)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () {
+                      final throwData = FakeThrowService.generateThrow(
+                        widget.liveThrows.length + 1,
+                      );
+
+                      throwData.label = widget.selectedThrowType;
+
+                      widget.onAddThrow(throwData);
+                    },
+                    icon: const Icon(Icons.science),
+                    label: const Text("Generate Fake Throw"),
+                  ),
+                ),
             ],
           ),
+        ),
 
-          const SizedBox(height: 15),
-
-          //--------------------------------
-          // SCAN BUTTON
-          //--------------------------------
-          ElevatedButton(
-            onPressed: scanForDevices,
-
-            child: const Text("Scan For Devices"),
-          ),
-
-          const SizedBox(height: 8),
-
-          Text(_queueStatusText()),
-
-          SwitchListTile(
-            title: const Text("Auto-connect FrisbeeTrack"),
-            value: autoConnectEnabled,
-            onChanged: (value) {
-              safeSetState(() {
-                autoConnectEnabled = value;
-              });
-
-              if (value) {
-                scanForDevices();
-              }
-            },
-          ),
-
-          const SizedBox(height: 10),
-
-          //--------------------------------
-          // DEVICE LIST
-          //--------------------------------
-          SizedBox(
-            height: 150,
-
-            child: ListView.builder(
-              itemCount: scanResults.length,
-
-              itemBuilder: (context, index) {
-                final result = scanResults[index];
-
-                return ListTile(
-                  title: Text(
-                    result.device.platformName.isEmpty
-                        ? "Unknown Device"
-                        : result.device.platformName,
-                  ),
-
-                  subtitle: Text(result.device.remoteId.toString()),
-
-                  trailing: ElevatedButton(
-                    onPressed: () {
-                      connectToDevice(result.device);
-                    },
-
-                    child: const Text("Connect"),
-                  ),
-                );
-              },
-            ),
-          ),
-
-          const Divider(),
-
-          //--------------------------------
-          // THROW TYPE
-          //--------------------------------
-          DropdownButton<String>(
-            value: widget.selectedThrowType,
-
-            items: widget.throwTypes.map((type) {
-              return DropdownMenuItem(value: type, child: Text(type));
-            }).toList(),
-
-            onChanged: (value) async {
-              widget.onThrowTypeChanged(value);
-              await _sendSelectedThrowLabel(value);
-            },
-          ),
-
-          const SizedBox(height: 10),
-
-          //--------------------------------
-          // FAKE THROW
-          //--------------------------------
-          ElevatedButton(
-            onPressed: () {
-              final throwData = FakeThrowService.generateThrow(
-                widget.liveThrows.length + 1,
-              );
-
-              throwData.label = widget.selectedThrowType;
-
-              widget.onAddThrow(throwData);
-            },
-
-            child: const Text("Generate Fake Throw"),
-          ),
-
-          const SizedBox(height: 10),
-
-          //--------------------------------
-          // THROW QUEUE
-          //--------------------------------
+        if (widget.showPendingThrows) ...[
+          const Divider(height: 1),
           Expanded(
             child: ListView.builder(
               itemCount: widget.liveThrows.length,
@@ -717,7 +739,7 @@ class _LivePageState extends State<LivePage> {
             ),
           ),
         ],
-      ),
+      ],
     );
   }
 
@@ -737,5 +759,89 @@ class _LivePageState extends State<LivePage> {
     }
 
     return "Queue: $count throws waiting to upload";
+  }
+
+  Future<void> _showDeviceScanner() async {
+    await scanForDevices();
+
+    if (!mounted) {
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            scannerSheetSetState = setSheetState;
+
+            return SafeArea(
+              child: SizedBox(
+                height: 420,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              "Bluetooth Devices",
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: "Refresh scan",
+                            onPressed: scanForDevices,
+                            icon: const Icon(Icons.refresh),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: scanResults.isEmpty
+                          ? const Center(child: Text("Scanning..."))
+                          : ListView.builder(
+                              itemCount: scanResults.length,
+                              itemBuilder: (context, index) {
+                                final result = scanResults[index];
+                                final name = result.device.platformName.isEmpty
+                                    ? result.device.advName
+                                    : result.device.platformName;
+
+                                return ListTile(
+                                  leading: Icon(
+                                    _isFrisbeeTrackResult(result)
+                                        ? Icons.sports
+                                        : Icons.bluetooth,
+                                  ),
+                                  title: Text(
+                                    name.isEmpty ? "Unknown Device" : name,
+                                  ),
+                                  subtitle: Text(
+                                    result.device.remoteId.toString(),
+                                  ),
+                                  trailing: FilledButton(
+                                    onPressed: () {
+                                      Navigator.of(context).pop();
+                                      connectToDevice(result.device);
+                                    },
+                                    child: const Text("Connect"),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    scannerSheetSetState = null;
   }
 }

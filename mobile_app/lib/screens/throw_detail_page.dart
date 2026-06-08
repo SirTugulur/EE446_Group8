@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/throw_data.dart';
+import '../widgets/throw_graph_card.dart';
 
 class ThrowDetailPage extends StatelessWidget {
   final ThrowData throwData;
@@ -39,34 +40,31 @@ class ThrowDetailPage extends StatelessWidget {
             value: throwData.wobble ? "Yes" : "No",
           ),
           _MetricRow(
+            label: "Completed",
+            value: _completionText(throwData.completed),
+          ),
+          _MetricRow(
             label: "Samples",
             value: throwData.samples.length.toString(),
           ),
           const SizedBox(height: 20),
           Text(
-            "Flight Data",
+            "Analysis",
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
-          SizedBox(
-            height: 220,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).dividerColor),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Center(
-                child: Text(
-                  throwData.samples.isEmpty
-                      ? "No sample data available"
-                      : "Graph-ready sample data captured",
-                ),
-              ),
-            ),
-          ),
+          ThrowGraphCard(throwData: throwData),
         ],
       ),
     );
+  }
+
+  String _completionText(bool? completed) {
+    if (completed == null) {
+      return "Unknown";
+    }
+
+    return completed ? "Yes" : "No";
   }
 }
 

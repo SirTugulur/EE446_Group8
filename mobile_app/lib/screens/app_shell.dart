@@ -2,12 +2,16 @@ import 'package:flutter/material.dart';
 
 import '../models/throw_data.dart';
 
-import 'live_page.dart';
-import 'saved_page.dart';
+import 'classification_page.dart';
+import 'data_collection_page.dart';
 
 class AppShell extends StatefulWidget {
+  final bool enableBluetoothStartup;
 
-  const AppShell({super.key});
+  const AppShell({
+    super.key,
+    this.enableBluetoothStartup = true,
+  });
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -79,14 +83,22 @@ class _AppShellState extends State<AppShell> {
 
     final pages = [
 
-      LivePage(
+      DataCollectionPage(
+        enableBluetoothStartup: widget.enableBluetoothStartup,
         liveThrows: liveThrows,
-        onSave: saveThrow,
-        onDelete: deleteLiveThrow,
-        onAddThrow: addThrow,
-        onWobbleChanged: updateWobble,
+        savedThrows: savedThrows,
         throwTypes: throwTypes,
         selectedThrowType: selectedThrowType,
+        onSave: saveThrow,
+        onDeleteLive: deleteLiveThrow,
+        onDeleteSaved: deleteSavedThrow,
+        onAddThrow: addThrow,
+        onClassifiedThrow: (throwData) {
+          setState(() {
+            savedThrows.insert(0, throwData);
+          });
+        },
+        onWobbleChanged: updateWobble,
         onThrowTypeChanged: (value) {
 
           setState(() {
@@ -96,9 +108,21 @@ class _AppShellState extends State<AppShell> {
         },
       ),
 
-      SavedPage(
-        savedThrows: savedThrows,
-        onDelete: deleteSavedThrow,
+      ClassificationPage(
+        enableBluetoothStartup: widget.enableBluetoothStartup,
+        classifiedThrows: savedThrows,
+        throwTypes: throwTypes,
+        selectedThrowType: selectedThrowType,
+        onClassifiedThrow: (throwData) {
+          setState(() {
+            savedThrows.insert(0, throwData);
+          });
+        },
+        onThrowTypeChanged: (value) {
+          setState(() {
+            selectedThrowType = value!;
+          });
+        },
       ),
     ];
 
@@ -121,13 +145,13 @@ class _AppShellState extends State<AppShell> {
         items: const [
 
           BottomNavigationBarItem(
-            icon: Icon(Icons.sports),
-            label: "Live",
+            icon: Icon(Icons.sensors),
+            label: "Data",
           ),
 
           BottomNavigationBarItem(
-            icon: Icon(Icons.save),
-            label: "Saved",
+            icon: Icon(Icons.analytics),
+            label: "Classify",
           ),
         ],
       ),
