@@ -85,6 +85,7 @@ class _LivePageState extends State<LivePage> {
   List<ScanResult> scanResults = [];
   _BleThrowUpload? activeUpload;
   StateSetter? scannerSheetSetState;
+  bool scannerSheetOpen = false;
 
   @override
   void initState() {
@@ -98,10 +99,15 @@ class _LivePageState extends State<LivePage> {
 
   @override
   void dispose() {
+    final device = connectedDevice;
+
     scanResultsSubscription?.cancel();
     connectionStateSubscription?.cancel();
     uartTxSubscription?.cancel();
     FlutterBluePlus.stopScan();
+    if (isConnected && device != null) {
+      unawaited(device.disconnect());
+    }
     super.dispose();
   }
 
@@ -137,14 +143,23 @@ class _LivePageState extends State<LivePage> {
       safeSetState(() {
         scanResults = results;
       });
-      scannerSheetSetState?.call(() {});
+      if (scannerSheetOpen) {
+        scannerSheetSetState?.call(() {});
+      }
 
       _connectToKnownFrisbeeTrackDevice(results);
     });
 
     await FlutterBluePlus.stopScan();
 
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+    try {
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint("BLE scan failed: $e");
+      safeSetState(() {
+        bleStatus = "Scan failed";
+      });
+    }
   }
 
   Future<void> _requestBlePermissions() async {
@@ -768,6 +783,7 @@ class _LivePageState extends State<LivePage> {
       return;
     }
 
+    scannerSheetOpen = true;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -842,6 +858,7 @@ class _LivePageState extends State<LivePage> {
       },
     );
 
+    scannerSheetOpen = false;
     scannerSheetSetState = null;
   }
 }

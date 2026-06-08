@@ -169,6 +169,43 @@ String boolText(bool value) {
   return value ? "true" : "false";
 }
 
+bool labelContains(const char* label, const char* needle) {
+  int labelLength = strlen(label);
+  int needleLength = strlen(needle);
+
+  if (needleLength == 0 || labelLength < needleLength) {
+    return false;
+  }
+
+  for (int i = 0; i <= labelLength - needleLength; i++) {
+    bool match = true;
+
+    for (int j = 0; j < needleLength; j++) {
+      char a = label[i + j];
+      char b = needle[j];
+
+      if (a >= 'A' && a <= 'Z') {
+        a = a - 'A' + 'a';
+      }
+
+      if (b >= 'A' && b <= 'Z') {
+        b = b - 'A' + 'a';
+      }
+
+      if (a != b) {
+        match = false;
+        break;
+      }
+    }
+
+    if (match) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // =====================================================
 // EDGE IMPULSE INFERENCE
 // =====================================================
@@ -230,12 +267,33 @@ ThrowPrediction classifyRecordedThrow(unsigned long flightTimeMs) {
       const char* label = result.classification[i].label;
       float value = result.classification[i].value;
 
-      if (strstr(label, "wobble") || strstr(label, "wobbly")) {
+      if (value >= 0.5f &&
+          (labelContains(label, "clean") ||
+           labelContains(label, "stable") ||
+           labelContains(label, "not_wobbly") ||
+           labelContains(label, "not wobbly"))) {
+        prediction.wobbly = false;
+        continue;
+      }
+
+      if (labelContains(label, "wobble") || labelContains(label, "wobbly")) {
         prediction.wobbly = value >= 0.5f;
         continue;
       }
 
-      if (strstr(label, "complete") || strstr(label, "caught")) {
+      if (value >= 0.5f &&
+          (labelContains(label, "incomplete") ||
+           labelContains(label, "dropped") ||
+           labelContains(label, "drop") ||
+           labelContains(label, "ground"))) {
+        prediction.completed = false;
+        continue;
+      }
+
+      if (labelContains(label, "complete") ||
+          labelContains(label, "completed") ||
+          labelContains(label, "caught") ||
+          labelContains(label, "catch")) {
         prediction.completed = value >= 0.5f;
         continue;
       }

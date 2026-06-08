@@ -34,13 +34,29 @@ class _AppShellState extends State<AppShell> {
 
   String selectedThrowType = "Backhand";
 
+  bool sameUploadedThrow(ThrowData a, ThrowData b) {
+    return a.samples.isNotEmpty &&
+        b.samples.isNotEmpty &&
+        a.throwId == b.throwId &&
+        a.label == b.label &&
+        a.samples.length == b.samples.length &&
+        (a.flightTime - b.flightTime).abs() < 0.001;
+  }
+
+  void addSavedThrow(ThrowData throwData) {
+    savedThrows.removeWhere(
+      (savedThrow) => sameUploadedThrow(savedThrow, throwData),
+    );
+    savedThrows.insert(0, throwData);
+  }
+
   void saveThrow(ThrowData throwData) {
 
     setState(() {
 
       liveThrows.remove(throwData);
 
-      savedThrows.add(throwData);
+      addSavedThrow(throwData);
     });
   }
 
@@ -64,6 +80,9 @@ class _AppShellState extends State<AppShell> {
 
     setState(() {
 
+      liveThrows.removeWhere(
+        (liveThrow) => sameUploadedThrow(liveThrow, throwData),
+      );
       liveThrows.insert(0, throwData);
     });
   }
@@ -95,7 +114,7 @@ class _AppShellState extends State<AppShell> {
         onAddThrow: addThrow,
         onClassifiedThrow: (throwData) {
           setState(() {
-            savedThrows.insert(0, throwData);
+            addSavedThrow(throwData);
           });
         },
         onWobbleChanged: updateWobble,
@@ -115,7 +134,7 @@ class _AppShellState extends State<AppShell> {
         selectedThrowType: selectedThrowType,
         onClassifiedThrow: (throwData) {
           setState(() {
-            savedThrows.insert(0, throwData);
+            addSavedThrow(throwData);
           });
         },
         onThrowTypeChanged: (value) {
