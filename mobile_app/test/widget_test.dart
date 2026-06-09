@@ -12,9 +12,11 @@ import 'package:frisbee_tracker/main.dart';
 void main() {
   testWidgets('Frisbee app smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const FrisbeeApp());
+    await tester.pumpWidget(
+      const FrisbeeApp(enableBluetoothStartup: false),
+    );
 
-    expect(find.text('Live Throws'), findsOneWidget);
+    expect(find.text('Data Collection'), findsOneWidget);
     expect(find.text('Generate Fake Throw'), findsOneWidget);
   });
 }
