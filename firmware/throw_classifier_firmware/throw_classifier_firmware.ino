@@ -4,12 +4,14 @@
 // Paste or add your Edge Impulse Arduino library header next to this sketch.
 // Example exported header name:
 //   #include "frisbee_throw_classifier_inferencing.h"
-#if __has_include("frisbee_throw_classifier_inferencing.h")
-#include "frisbee_throw_classifier_inferencing.h"
+// #if __has_include("frisbee_inferencing.h")
+// #include "frisbee_inferencing.h"
+// #define HAS_EDGE_IMPULSE_MODEL 1
+// #else
+// #define HAS_EDGE_IMPULSE_MODEL 0
+// #endif
+#include "frisbee_inferencing.h"
 #define HAS_EDGE_IMPULSE_MODEL 1
-#else
-#define HAS_EDGE_IMPULSE_MODEL 0
-#endif
 
 // =====================================================
 // CONFIG
@@ -537,6 +539,8 @@ void setup() {
   if (!BLE.begin()) {
     while (1);
   }
+
+  if (HAS_EDGE_IMPULSE_MODEL == 0) Serial.println("does not have edge impulse model");
 
   BLE.setLocalName("FrisbeeTrack");
   BLE.setAdvertisedService(uartService);
