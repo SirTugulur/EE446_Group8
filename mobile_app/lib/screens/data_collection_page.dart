@@ -15,7 +15,6 @@ class DataCollectionPage extends StatelessWidget {
   final Function(ThrowData) onDeleteSaved;
   final Function(ThrowData) onAddThrow;
   final Function(ThrowData) onClassifiedThrow;
-  final Function(ThrowData, bool) onWobbleChanged;
   final Function(String?) onThrowTypeChanged;
 
   const DataCollectionPage({
@@ -30,7 +29,6 @@ class DataCollectionPage extends StatelessWidget {
     required this.onDeleteSaved,
     required this.onAddThrow,
     required this.onClassifiedThrow,
-    required this.onWobbleChanged,
     required this.onThrowTypeChanged,
   });
 
@@ -58,7 +56,6 @@ class DataCollectionPage extends StatelessWidget {
               onDelete: onDeleteLive,
               onAddThrow: onAddThrow,
               onClassifiedThrow: onClassifiedThrow,
-              onWobbleChanged: onWobbleChanged,
               throwTypes: throwTypes,
               selectedThrowType: selectedThrowType,
               onThrowTypeChanged: onThrowTypeChanged,

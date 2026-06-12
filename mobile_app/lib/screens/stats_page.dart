@@ -23,17 +23,18 @@ class StatsPage extends StatelessWidget {
       return _ThrowTypeStats(type, throws.toList());
     }).toList();
 
+    // Filter out throw types that don't have any data yet
     final populatedStats = stats.where((stat) => stat.count > 0).toList();
+
+    // Best throw = Highest average max gyro
     final best = populatedStats.isEmpty
         ? null
-        : populatedStats.reduce((a, b) => a.wobbleRate <= b.wobbleRate ? a : b);
+        : populatedStats.reduce((a, b) => a.averageMaxGyro >= b.averageMaxGyro ? a : b);
+        
+    // Worst throw = Lowest average max gyro
     final worst = populatedStats.isEmpty
         ? null
-        : populatedStats.reduce((a, b) => a.wobbleRate >= b.wobbleRate ? a : b);
-    final overallWobbleRate = savedThrows.isEmpty
-        ? null
-        : savedThrows.where((throwData) => throwData.wobble).length /
-            savedThrows.length;
+        : populatedStats.reduce((a, b) => a.averageMaxGyro <= b.averageMaxGyro ? a : b);
 
     final body = ListView(
         padding: const EdgeInsets.all(16),
@@ -45,7 +46,7 @@ class StatsPage extends StatelessWidget {
                   title: "Best Throw",
                   value: best == null
                       ? "Not enough data"
-                      : "${best.type} (${_percent(best.wobbleRate)} wobbly)",
+                      : "${best.type} (${best.averageMaxGyro.toStringAsFixed(0)} gyro)",
                   icon: Icons.trending_up,
                   color: Colors.green,
                 ),
@@ -56,21 +57,14 @@ class StatsPage extends StatelessWidget {
                   title: "Worst Throw",
                   value: worst == null
                       ? "Not enough data"
-                      : "${worst.type} (${_percent(worst.wobbleRate)} wobbly)",
+                      : "${worst.type} (${worst.averageMaxGyro.toStringAsFixed(0)} gyro)",
                   icon: Icons.trending_down,
                   color: Colors.orange,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          _StatSummaryCard(
-            title: "Overall Wobble",
-            value: overallWobbleRate == null
-                ? "Not enough data"
-                : _percent(overallWobbleRate),
-            icon: Icons.analytics,
-          ),
+          
           const SizedBox(height: 20),
           Text(
             "Throw Types",
@@ -109,14 +103,6 @@ class _ThrowTypeStats {
   double get averageMaxAccel => _average((throwData) => throwData.maxAccel);
 
   double get averageMaxGyro => _average((throwData) => throwData.maxGyro);
-
-  double get wobbleRate {
-    if (throws.isEmpty) {
-      return 0;
-    }
-
-    return throws.where((throwData) => throwData.wobble).length / throws.length;
-  }
 
   double? get completionRate {
     final knownThrows = throws
@@ -158,7 +144,6 @@ class _ThrowTypeStatsTile extends StatelessWidget {
         title: Text(stat.type),
         subtitle: Text(
           "Throws: ${stat.count}\n"
-          "Wobbly: ${(stat.wobbleRate * 100).toStringAsFixed(0)}% | "
           "Complete: ${_completionText(stat.completionRate)}\n"
           "Avg flight: ${stat.averageFlightTime.toStringAsFixed(2)} s | "
           "Avg max gyro: ${stat.averageMaxGyro.toStringAsFixed(0)}",

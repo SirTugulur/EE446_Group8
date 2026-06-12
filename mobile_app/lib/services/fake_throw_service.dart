@@ -13,7 +13,6 @@ class FakeThrowService {
       "Forehand",
       "Hammer",
       "Scoober",
-      "Blade",
     ];
 
     return ThrowData(

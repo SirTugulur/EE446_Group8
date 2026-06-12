@@ -36,10 +36,6 @@ class ThrowDetailPage extends StatelessWidget {
             value: throwData.maxGyro.toStringAsFixed(0),
           ),
           _MetricRow(
-            label: "Wobbly",
-            value: throwData.wobble ? "Yes" : "No",
-          ),
-          _MetricRow(
             label: "Completed",
             value: _completionText(throwData.completed),
           ),

@@ -26,7 +26,7 @@ class SavedPage extends StatelessWidget {
     final csv = StringBuffer(
       "sample_index,throw_id,label,time_ms,"
       "ax,ay,az,gx,gy,gz,mx,my,mz,"
-      "accel_mag,gyro_mag,wobble,completed\n",
+      "accel_mag,gyro_mag,completed\n",
     );
 
     for (var t in savedThrows) {
@@ -47,7 +47,6 @@ class SavedPage extends StatelessWidget {
           "${sample.mz},"
           "${sample.accelMag},"
           "${sample.gyroMag},"
-          "${t.wobble},"
           "${t.completed ?? ""}",
         );
       }
@@ -115,8 +114,6 @@ class SavedPage extends StatelessWidget {
                         "${throwData.maxAccel.toStringAsFixed(2)} g | "
                         "Max Gyro: "
                         "${throwData.maxGyro.toStringAsFixed(0)}\n"
-                        "Wobbly: "
-                        "${throwData.wobble ? "Yes" : "No"} | "
                         "Completed: "
                         "${_completionText(throwData.completed)}",
                       ),

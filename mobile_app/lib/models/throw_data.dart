@@ -37,7 +37,6 @@ class ThrowData {
   final double maxGyro;
   final List<ThrowSample> samples;
 
-  bool wobble;
   bool? completed;
   double? confidence;
 
@@ -48,7 +47,6 @@ class ThrowData {
     required this.maxAccel,
     required this.maxGyro,
     this.samples = const [],
-    this.wobble = false,
     this.completed,
     this.confidence,
   });

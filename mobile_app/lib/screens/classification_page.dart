@@ -39,7 +39,6 @@ class ClassificationPage extends StatelessWidget {
             onDelete: (_) {},
             onAddThrow: onClassifiedThrow,
             onClassifiedThrow: onClassifiedThrow,
-            onWobbleChanged: (_, _) {},
             throwTypes: throwTypes,
             selectedThrowType: selectedThrowType,
             onThrowTypeChanged: onThrowTypeChanged,

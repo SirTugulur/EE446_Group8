@@ -23,7 +23,6 @@ class LivePage extends StatefulWidget {
   final Function(ThrowData) onDelete;
   final Function(ThrowData) onAddThrow;
   final Function(ThrowData)? onClassifiedThrow;
-  final Function(ThrowData, bool) onWobbleChanged;
 
   final List<String> throwTypes;
   final String selectedThrowType;
@@ -42,7 +41,6 @@ class LivePage extends StatefulWidget {
     required this.onDelete,
     required this.onAddThrow,
     this.onClassifiedThrow,
-    required this.onWobbleChanged,
     required this.throwTypes,
     required this.selectedThrowType,
     this.bleModeCommand = "MODE:COLLECT",
@@ -333,8 +331,14 @@ class _LivePageState extends State<LivePage> {
     });
 
     await txCharacteristic.setNotifyValue(true);
+
+    await Future.delayed(const Duration(milliseconds: 200));
     await _sendDeviceMode();
-    await _sendSelectedThrowLabel();
+
+    if (widget.bleModeCommand == "MODE::COLLECT") {
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _sendSelectedThrowLabel();
+    }
     debugPrint("Subscribed to Nordic UART TX notifications.");
   }
 
@@ -501,7 +505,6 @@ class _LivePageState extends State<LivePage> {
     final maxAccel = (metadata["max_accel"] as num?)?.toDouble() ?? 0.0;
     final maxGyro = (metadata["max_gyro"] as num?)?.toDouble() ?? 0.0;
     final expectedSamples = (metadata["samples"] as num?)?.toInt();
-    final wobble = metadata["wobble"] as bool? ?? false;
     final completed = metadata["completed"] as bool?;
     final confidence = (metadata["confidence"] as num?)?.toDouble();
     final mode = metadata["mode"] as String?;
@@ -520,7 +523,6 @@ class _LivePageState extends State<LivePage> {
       maxAccel: maxAccel,
       maxGyro: maxGyro,
       samples: List.unmodifiable(upload.samples),
-      wobble: wobble,
       completed: completed,
       confidence: confidence,
     );
@@ -535,7 +537,11 @@ class _LivePageState extends State<LivePage> {
       "Stored throw $throwId with ${upload.samples.length} samples. Sending ACK.",
     );
     await _acknowledgeThrow();
-    await _sendSelectedThrowLabel();
+
+    if (widget.bleModeCommand == "MODE::COLLECT") {
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _sendSelectedThrowLabel();
+    }
   }
 
   Future<void> _acknowledgeThrow() async {
@@ -713,16 +719,6 @@ class _LivePageState extends State<LivePage> {
 
                         Text(
                           "Max Gyro: ${throwData.maxGyro.toStringAsFixed(0)}",
-                        ),
-
-                        CheckboxListTile(
-                          value: throwData.wobble,
-
-                          title: const Text("Wobbly"),
-
-                          onChanged: (value) {
-                            widget.onWobbleChanged(throwData, value ?? false);
-                          },
                         ),
 
                         Row(

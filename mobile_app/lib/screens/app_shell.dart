@@ -29,7 +29,6 @@ class _AppShellState extends State<AppShell> {
     "Forehand",
     "Hammer",
     "Scoober",
-    "Blade",
   ];
 
   String selectedThrowType = "Backhand";
@@ -87,16 +86,6 @@ class _AppShellState extends State<AppShell> {
     });
   }
 
-  void updateWobble(
-      ThrowData throwData,
-      bool wobble) {
-
-    setState(() {
-
-      throwData.wobble = wobble;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
 
@@ -117,7 +106,6 @@ class _AppShellState extends State<AppShell> {
             addSavedThrow(throwData);
           });
         },
-        onWobbleChanged: updateWobble,
         onThrowTypeChanged: (value) {
 
           setState(() {
