@@ -81,7 +81,6 @@ struct IMUSample {
 struct ThrowPrediction {
   char label[MAX_LABEL_LEN];
   float confidence;
-  bool wobbly;
   bool completed;
 };
 
@@ -92,7 +91,6 @@ struct CompletedThrow {
   float maxAccel;
   float maxGyro;
   int sampleCount;
-  bool wobbly;
   bool completed;
   float confidence;
   bool waitingForAck;
@@ -249,12 +247,21 @@ void buildModelFeatures() {
 
 ThrowPrediction classifyRecordedThrow(unsigned long flightTimeMs) {
   ThrowPrediction prediction;
-  copyLabel(prediction.label, collectionLabel);
   prediction.confidence = 0.0f;
-  prediction.wobbly = false;
   prediction.completed = true;
 
-#if HAS_EDGE_IMPULSE_MODEL
+  // ==========================================================
+  // MODE 1: DATA COLLECTION (Skip AI, use App Label)
+  // ==========================================================
+  if (deviceMode == DATA_COLLECTION) {
+    copyLabel(prediction.label, collectionLabel);
+    return prediction; // Exit immediately before running the ML model
+  }
+
+  // ==========================================================
+  // MODE 2: CLASSIFICATION (Run Edge Impulse)
+  // ==========================================================
+  #if HAS_EDGE_IMPULSE_MODEL
   buildModelFeatures();
 
   signal_t signal;
@@ -269,20 +276,7 @@ ThrowPrediction classifyRecordedThrow(unsigned long flightTimeMs) {
       const char* label = result.classification[i].label;
       float value = result.classification[i].value;
 
-      if (value >= 0.5f &&
-          (labelContains(label, "clean") ||
-           labelContains(label, "stable") ||
-           labelContains(label, "not_wobbly") ||
-           labelContains(label, "not wobbly"))) {
-        prediction.wobbly = false;
-        continue;
-      }
-
-      if (labelContains(label, "wobble") || labelContains(label, "wobbly")) {
-        prediction.wobbly = value >= 0.5f;
-        continue;
-      }
-
+      // Handle Completion Modifiers
       if (value >= 0.5f &&
           (labelContains(label, "incomplete") ||
            labelContains(label, "dropped") ||
@@ -300,6 +294,7 @@ ThrowPrediction classifyRecordedThrow(unsigned long flightTimeMs) {
         continue;
       }
 
+      // Handle Core Throw Classification
       if (value > prediction.confidence) {
         prediction.confidence = value;
         copyLabel(prediction.label, label);
@@ -308,16 +303,9 @@ ThrowPrediction classifyRecordedThrow(unsigned long flightTimeMs) {
   } else {
     copyLabel(prediction.label, "model_error");
   }
-#else
-  // Fallback keeps the sketch useful before the model is pasted in.
-  prediction.wobbly = activeMaxGyro > 900.0f || activeMaxAccel > 8.0f;
-  prediction.completed = flightTimeMs > 350 && activeMaxAccel < 18.0f;
-  prediction.confidence = 0.0f;
-#endif
-
-  if (deviceMode == DATA_COLLECTION) {
-    copyLabel(prediction.label, collectionLabel);
-  }
+  #else
+    copyLabel(prediction.label, "no_model_found");
+  #endif
 
   return prediction;
 }
@@ -371,7 +359,6 @@ void queueCompletedThrow(unsigned long flightTimeMs) {
   queuedThrow.maxAccel = activeMaxAccel;
   queuedThrow.maxGyro = activeMaxGyro;
   queuedThrow.sampleCount = recordingCount;
-  queuedThrow.wobbly = prediction.wobbly;
   queuedThrow.completed = prediction.completed;
   queuedThrow.confidence = prediction.confidence;
   queuedThrow.waitingForAck = false;
@@ -447,7 +434,6 @@ void handleAsyncUpload() {
                     ",\"flight_time_ms\":" + String(queuedThrow.flightTimeMs) +
                     ",\"max_accel\":" + String(queuedThrow.maxAccel, 4) +
                     ",\"max_gyro\":" + String(queuedThrow.maxGyro, 2) +
-                    ",\"wobble\":" + boolText(queuedThrow.wobbly) +
                     ",\"completed\":" + boolText(queuedThrow.completed) +
                     ",\"confidence\":" + String(queuedThrow.confidence, 4) + "}\n";
 
